@@ -1,0 +1,21 @@
+[package]
+name = "seraphd"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.103"
+async-trait = "0.1.89"
+pingora = { version = "0.8.1", features = ["openssl"] }
+pingora-proxy = { version = "0.8.1", features = ["openssl"] }
+openssl = "0.10"
+tokio = { version = "1.52.3", features = ["full"] }
+axum = { version = "0.7.9", features = ["ws"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+toml = "0.8"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+rust-embed = "8.5.0"
+mime_guess = "2.0.5"
+arc-swap = "1.7.1"

@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "seraphd",
+  "seraph-agent"
+]
+
+resolver = "2"
