@@ -181,3 +181,57 @@ pub async fn enroll_tunnel(
         ca_certificate: state.ca.cert_pem.clone(),
     }))
 }
+
+#[derive(Serialize)]
+pub struct ListenerInfo {
+    pub name: String,
+    pub address: String,
+    pub status: String,
+}
+
+#[derive(Serialize)]
+pub struct StatusResponse {
+    pub listeners: Vec<ListenerInfo>,
+}
+
+// GET /api/status
+pub async fn get_status(
+    State(state): State<Arc<AppState>>,
+) -> Json<StatusResponse> {
+    let mut listeners = vec![
+        ListenerInfo {
+            name: "HTTP Web Proxy".to_string(),
+            address: state.config.http_addr.clone(),
+            status: "Active".to_string(),
+        },
+        ListenerInfo {
+            name: "HTTPS Web Proxy".to_string(),
+            address: state.config.https_addr.clone(),
+            status: "Active".to_string(),
+        },
+        ListenerInfo {
+            name: "Admin Control Portal".to_string(),
+            address: state.config.admin_addr.clone(),
+            status: "Active".to_string(),
+        },
+        ListenerInfo {
+            name: "QUIC Tunnel Server".to_string(),
+            address: "0.0.0.0:7700".to_string(),
+            status: "Active".to_string(),
+        },
+    ];
+
+    // Add active dynamic UDS route listeners
+    {
+        let active_listeners = state.active_route_listeners.lock().unwrap();
+        for host in active_listeners.iter() {
+            listeners.push(ListenerInfo {
+                name: format!("UDS Route Bridge ({})", host),
+                address: format!("tunnels/route-{}.sock", host),
+                status: "Active".to_string(),
+            });
+        }
+    }
+
+    Json(StatusResponse { listeners })
+}

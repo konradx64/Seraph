@@ -21,7 +21,7 @@
     Globe,
     ArrowRight,
     Clock,
-    Link
+    Cable
   } from '@lucide/svelte';
 
   // Shared state variables
@@ -29,6 +29,7 @@
   let routes = $state([]);
   let certs = $state([]);
   let tunnels = $state([]);
+  let gatewayStatus = $state({ listeners: [] });
   let logs = $state([]);
   let alertMsg = $state(null);
   let alertSuccess = $state(true);
@@ -158,6 +159,17 @@
     }
   }
 
+  async function fetchGatewayStatus() {
+    try {
+      const res = await fetch("/api/status");
+      if (res.ok) {
+        gatewayStatus = await res.json();
+      }
+    } catch (err) {
+      console.error("Failed to fetch gateway status:", err);
+    }
+  }
+
 
 
   function connectSSE() {
@@ -174,6 +186,7 @@
       fetchRoutes();
       fetchCerts();
       fetchTunnels();
+      fetchGatewayStatus();
     };
     
     eventSource.onmessage = (event) => {
@@ -270,8 +283,12 @@
     fetchRoutes();
     fetchCerts();
     fetchTunnels();
+    fetchGatewayStatus();
 
-    const interval = setInterval(fetchTunnels, 5000);
+    const interval = setInterval(() => {
+      fetchTunnels();
+      fetchGatewayStatus();
+    }, 5000);
     return () => clearInterval(interval);
   });
 
@@ -786,13 +803,13 @@
           </div>
         </div>
 
-        <!-- QUIC Tunnels Registry -->
+        <!-- Tunnels Registry -->
         <div class="card bg-white border border-slate-200 rounded-xl">
           <div class="card-body p-6">
             <div class="flex items-center justify-between mb-4">
               <h2 class="text-slate-900 font-bold text-sm uppercase tracking-wider flex items-center gap-2">
-                <Link class="w-4.5 h-4.5 text-cyan-500" />
-                QUIC Tunnels
+                <Cable class="w-4.5 h-4.5 text-cyan-500" />
+                Tunnels
               </h2>
               <button class="btn btn-xs bg-cyan-50 hover:bg-cyan-100 text-cyan-600 border-none rounded-md px-3 py-2 flex items-center gap-1.5 font-extrabold text-xs" 
                 onclick={() => document.getElementById('add_tunnel_modal').showModal()}>
@@ -926,6 +943,31 @@
                 </div>
                 <progress class="progress progress-error w-full h-1.5" value={stats.status_5xx} max={stats.total_requests || 1}></progress>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Active Listeners (Services & Ports) -->
+        <div class="card bg-white border border-slate-200 rounded-xl">
+          <div class="card-body p-6">
+            <h2 class="text-slate-900 font-bold text-xs uppercase tracking-wider flex items-center gap-2 mb-4">
+              <Cable class="w-4.5 h-4.5 text-cyan-500" />
+              Active Listeners
+            </h2>
+            <div class="space-y-3">
+              {#each gatewayStatus.listeners as listener}
+                <div class="flex items-center justify-between border-b border-slate-100 pb-2.5 last:border-0 last:pb-0">
+                  <div class="flex flex-col">
+                    <span class="text-xs font-bold text-slate-700">{listener.name}</span>
+                    <code class="text-[10px] font-mono text-slate-400 mt-0.5">{listener.address}</code>
+                  </div>
+                  <span class="badge badge-xs px-2 py-1 text-emerald-700 bg-emerald-50 border-emerald-200 font-bold text-[9px]">
+                    {listener.status}
+                  </span>
+                </div>
+              {:else}
+                <div class="text-center py-4 text-xs text-slate-400">No active listeners detected.</div>
+              {/each}
             </div>
           </div>
         </div>
@@ -1203,7 +1245,7 @@
     <div class="modal-box bg-white max-w-sm rounded-xl p-6 border border-slate-200">
       <div class="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
         <h3 class="font-black text-sm uppercase text-slate-800 tracking-wider flex items-center gap-2">
-          <Link class="w-4.5 h-4.5 text-cyan-500" />
+          <Cable class="w-4.5 h-4.5 text-cyan-500" />
           Create New Tunnel
         </h3>
         <button class="btn btn-ghost btn-xs text-slate-400 rounded-md p-1" onclick={() => document.getElementById('add_tunnel_modal').close()}>

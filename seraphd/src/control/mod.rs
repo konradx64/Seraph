@@ -71,6 +71,7 @@ pub fn start(state: Arc<AppState>) -> anyhow::Result<()> {
                         .delete(tunnels::delete_tunnel),
                 )
                 .route("/api/tunnels/enroll", axum::routing::post(tunnels::enroll_tunnel))
+                .route("/api/status", get(tunnels::get_status))
                 .route("/api/events", get(sse::get_events))
                 .fallback(dashboard::serve_asset)
                 .with_state(state);

@@ -82,10 +82,17 @@ async fn main() -> Result<()> {
         SocketAddr::from(([0u8; 4], 0))
     };
     let mut endpoint = quinn::Endpoint::client(bind_addr)?;
-    endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(2048).into());
+    transport.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
+    transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
+
+    let mut quinn_client_config = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(client_config)
             .context("Failed to build Quinn client config")?,
-    )));
+    ));
+    quinn_client_config.transport_config(Arc::new(transport));
+    endpoint.set_default_client_config(quinn_client_config);
 
     // Connect to the server
     let connection = endpoint
