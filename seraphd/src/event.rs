@@ -25,5 +25,14 @@ pub enum Event {
         time: String,
         text: String,
     },
+    StatsUpdate {
+        total_requests: u64,
+        status_2xx: u64,
+        status_3xx: u64,
+        status_4xx: u64,
+        status_5xx: u64,
+        rps: u64,
+        routes: std::collections::HashMap<String, crate::stats::RouteStatsSnapshot>,
+    },
 }
 

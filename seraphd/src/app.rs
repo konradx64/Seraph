@@ -1,7 +1,7 @@
 use super::route::Route;
 use crate::web_proxy::WebProxyServer;
 use crate::db::Database;
-use crate::{config::AppConfig, state::AppState, registry::{certs::CertificateRegistry, routes::RouteRegistry}};
+use crate::{config::AppConfig, state::AppState, registry::{CertificateRegistry, RouteRegistry}};
 use std::sync::Arc;
 
 pub fn run() -> anyhow::Result<()> {
@@ -34,9 +34,9 @@ pub fn run() -> anyhow::Result<()> {
     // Populate registries
     let routes = RouteRegistry::new(routes_list);
     let mut certs = CertificateRegistry::new();
-    for (sni, cert_pem, key_pem) in certs_list {
-        if let Err(e) = certs.register(&sni, &cert_pem, &key_pem) {
-            tracing::error!("failed to load certificate for {}: {}", sni, e);
+    for db_cert in certs_list {
+        if let Err(e) = certs.register(&db_cert.sni, &db_cert.cert_pem, &db_cert.key_pem) {
+            tracing::error!("failed to load certificate for {}: {}", db_cert.sni, e);
         }
     }
 

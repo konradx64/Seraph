@@ -15,19 +15,29 @@ impl WebProxyHandler {
     }
 }
 
+pub struct ReqContext {
+    pub start_time: std::time::Instant,
+    pub matched_host: Option<String>,
+}
+
 #[async_trait]
 impl ProxyHttp for WebProxyHandler {
-    type CTX = bool;
+    type CTX = ReqContext;
     fn new_ctx(&self) -> Self::CTX {
-        false
+        ReqContext {
+            start_time: std::time::Instant::now(),
+            matched_host: None,
+        }
     }
 
     async fn request_filter(
         &self,
         session: &mut Session,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
-        let path = session.req_header().uri.path();
+        let path = session.req_header().uri.path().to_string();
+        
+        // 1. Serve ACME challenge first
         if path.starts_with("/.well-known/acme-challenge/") {
             let token = path.trim_start_matches("/.well-known/acme-challenge/");
             let key_auth = {
@@ -48,19 +58,67 @@ impl ProxyHttp for WebProxyHandler {
                 return Ok(true);
             }
         }
+
+        // 2. Fetch Host header to verify redirection requirements
+        let host = session
+            .req_header()
+            .uri
+            .host()
+            .or_else(|| {
+                session
+                    .req_header()
+                    .headers
+                    .get("Host")
+                    .and_then(|h| h.to_str().ok())
+                    .map(|h| h.split(':').next().unwrap_or(""))
+            })
+            .unwrap_or("")
+            .to_string();
+
+        let routes = self.state.routes.load();
+        let matched = routes.match_route(&host, &path);
+
+        if let Some(route) = matched {
+            ctx.matched_host = Some(route.hostname.clone());
+
+            // 3. Force HTTP -> HTTPS redirect if TlsMode::Enforced and client connects over plain HTTP
+            let is_tls = session.req_header().uri.scheme_str() == Some("https");
+            if route.tls == crate::route::TlsMode::Enforced && !is_tls {
+                tracing::info!("Redirecting HTTP request to HTTPS for host: {}", host);
+                
+                let mut response = pingora::http::ResponseHeader::build(
+                    pingora::http::StatusCode::MOVED_PERMANENTLY,
+                    Some(0),
+                ).unwrap();
+
+                let query = session.req_header().uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+                let location = format!("https://{}:8443{}{}", host, path, query);
+                
+                response.insert_header("Location", location).unwrap();
+                response.insert_header("Content-Length", "0").unwrap();
+
+                session.write_response_header(Box::new(response), true).await?;
+                
+                let _ = self.state.events.send(crate::event::Event::RequestHit {
+                    host: host.to_string(),
+                    method: session.req_header().method.to_string(),
+                    path: path.to_string(),
+                    upstream: "HTTP-to-HTTPS-Redirect".to_string(),
+                });
+
+                return Ok(true);
+            }
+        }
+
         Ok(false)
     }
 
     async fn upstream_peer(
         &self,
         session: &mut Session,
-        _ctx: &mut Self::CTX,
+        ctx: &mut Self::CTX,
     ) -> pingora::Result<Box<HttpPeer>> {
         let path = session.req_header().uri.path();
-
-        // For HTTP/1.1 the host is in the Host header.
-        // For HTTP/2 it's in the :authority pseudo-header, which Pingora
-        // maps into the URI's authority component.
         let host = session
             .req_header()
             .uri
@@ -80,10 +138,22 @@ impl ProxyHttp for WebProxyHandler {
         let routes = self.state.routes.load();
         let matched = routes.match_route(host, path);
 
+        if let Some(route) = &matched {
+            // Block HTTPS connections if route is configured as HTTP only
+            let is_tls = session.req_header().uri.scheme_str() == Some("https");
+            if route.tls == crate::route::TlsMode::Disabled && is_tls {
+                return Err(pingora::Error::explain(
+                    pingora::ErrorType::HTTPStatus(400),
+                    "HTTPS not supported for this host",
+                ));
+            }
+        }
+
         let peer = matched.as_ref().map(|route| {
+            ctx.matched_host = Some(route.hostname.clone());
             Box::new(HttpPeer::new(
                 &route.upstream,
-                false,
+                route.upstream_tls,
                 route.hostname.clone(),
             ))
         });
@@ -113,5 +183,81 @@ impl ProxyHttp for WebProxyHandler {
                 "No route configured",
             )),
         }
+    }
+
+    async fn logging(
+        &self,
+        session: &mut Session,
+        e: Option<&pingora::Error>,
+        ctx: &mut Self::CTX,
+    ) {
+        let status = session
+            .response_written()
+            .map(|resp| resp.status.as_u16())
+            .unwrap_or(502);
+        
+        self.state.stats.record_request(status);
+
+        if let Some(host) = &ctx.matched_host {
+            let latency_ms = ctx.start_time.elapsed().as_millis() as u64;
+            let is_connection_failure = e.is_some() || status == 502 || status == 504;
+            self.state.stats.record_route_request(host, latency_ms, is_connection_failure);
+        }
+    }
+
+    async fn upstream_request_filter(
+        &self,
+        session: &mut Session,
+        upstream_request: &mut pingora::http::RequestHeader,
+        ctx: &mut Self::CTX,
+    ) -> pingora::Result<()> {
+        if let Some(host) = &ctx.matched_host {
+            let routes = self.state.routes.load();
+            if let Some(route) = routes.match_route(host, "") {
+                if route.forward_ip {
+                    if let Some(client_addr) = session.client_addr() {
+                        let client_ip = match client_addr.as_inet() {
+                            Some(inet) => inet.ip().to_string(),
+                            None => client_addr.to_string(),
+                        };
+                        let _ = upstream_request.insert_header("X-Real-IP", &client_ip);
+                        let _ = upstream_request.insert_header("X-Forwarded-For", &client_ip);
+                    }
+                    
+                    let is_tls = session.req_header().uri.scheme_str() == Some("https");
+                    let proto = if is_tls { "https" } else { "http" };
+                    let _ = upstream_request.insert_header("X-Forwarded-Proto", proto);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn response_filter(
+        &self,
+        _session: &mut Session,
+        upstream_response: &mut pingora::http::ResponseHeader,
+        ctx: &mut Self::CTX,
+    ) -> pingora::Result<()> {
+        if let Some(host) = &ctx.matched_host {
+            let routes = self.state.routes.load();
+            if let Some(route) = routes.match_route(host, "") {
+                if route.hsts {
+                    let _ = upstream_response.insert_header(
+                        "Strict-Transport-Security",
+                        "max-age=63072000; includeSubDomains; preload",
+                    );
+                }
+
+                if let Some(origins) = &route.cors_origins {
+                    if !origins.is_empty() {
+                        let _ = upstream_response.insert_header("Access-Control-Allow-Origin", origins);
+                        let _ = upstream_response.insert_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH");
+                        let _ = upstream_response.insert_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }

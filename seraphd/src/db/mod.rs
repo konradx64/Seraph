@@ -30,6 +30,12 @@ impl Database {
             )",
             [],
         )?;
+        // Migration: Add upstream_tls if it doesn't exist
+        let _ = conn.execute("ALTER TABLE routes ADD COLUMN upstream_tls INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE routes ADD COLUMN hsts INTEGER DEFAULT 0", []);
+        let _ = conn.execute("ALTER TABLE routes ADD COLUMN cors_origins TEXT", []);
+        let _ = conn.execute("ALTER TABLE routes ADD COLUMN forward_ip INTEGER DEFAULT 1", []);
+
         conn.execute(
             "CREATE TABLE IF NOT EXISTS certificates (
                 sni TEXT PRIMARY KEY,
@@ -38,6 +44,8 @@ impl Database {
             )",
             [],
         )?;
+        // Migration: Add acme_email if it doesn't exist
+        let _ = conn.execute("ALTER TABLE certificates ADD COLUMN acme_email TEXT", []);
         Ok(())
     }
 }

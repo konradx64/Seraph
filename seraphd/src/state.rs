@@ -1,4 +1,4 @@
-use crate::{config::AppConfig, db::Database, event::Event, registry::{certs::CertificateRegistry, routes::RouteRegistry}};
+use crate::{config::AppConfig, db::Database, event::Event, registry::{CertificateRegistry, RouteRegistry}};
 use arc_swap::ArcSwap;
 use std::sync::RwLock;
 use std::collections::HashMap;
@@ -10,6 +10,7 @@ pub struct AppState {
     pub certs: ArcSwap<CertificateRegistry>,
     pub events: tokio::sync::broadcast::Sender<Event>,
     pub acme_challenges: RwLock<HashMap<String, String>>,
+    pub stats: crate::stats::Stats,
 }
 
 impl AppState {
@@ -27,6 +28,7 @@ impl AppState {
             certs: ArcSwap::from_pointee(certs),
             events,
             acme_challenges: RwLock::new(HashMap::new()),
+            stats: crate::stats::Stats::default(),
         }
     }
 }

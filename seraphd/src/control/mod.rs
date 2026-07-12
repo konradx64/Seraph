@@ -27,6 +27,30 @@ pub fn start(state: Arc<AppState>) -> anyhow::Result<()> {
         rt.block_on(async {
             tokio::spawn(crate::acme::start_acme_worker(state.clone()));
 
+            // Spawn periodic stats streaming worker
+            let state_clone = state.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+                let mut last_requests = 0;
+                loop {
+                    interval.tick().await;
+                    let snap = state_clone.stats.get_snapshot();
+                    let current_requests = snap.total_requests;
+                    let rps = current_requests.saturating_sub(last_requests);
+                    last_requests = current_requests;
+
+                    let _ = state_clone.events.send(crate::event::Event::StatsUpdate {
+                        total_requests: snap.total_requests,
+                        status_2xx: snap.status_2xx,
+                        status_3xx: snap.status_3xx,
+                        status_4xx: snap.status_4xx,
+                        status_5xx: snap.status_5xx,
+                        rps,
+                        routes: snap.routes,
+                    });
+                }
+            });
+
             let app = Router::new()
                 .route(
                     "/api/routes",
@@ -37,6 +61,7 @@ pub fn start(state: Arc<AppState>) -> anyhow::Result<()> {
                 .route("/api/certs", get(certs::get_certs).post(certs::register_cert))
                 .route("/api/certs/refresh", axum::routing::post(certs::refresh_cert))
                 .route("/api/certs/generate", axum::routing::post(certs::generate_cert))
+                .route("/api/certs/acme", axum::routing::post(certs::generate_acme_cert))
                 .route("/api/events", get(sse::get_events))
                 .fallback(dashboard::serve_asset)
                 .with_state(state);

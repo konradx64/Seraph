@@ -7,16 +7,18 @@ pub struct Route {
     pub upstream: String,
     pub tunnel: Option<String>,
     pub tls: TlsMode,
+    pub upstream_tls: bool,
+    pub hsts: bool,
+    pub cors_origins: Option<String>,
+    pub forward_ip: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub enum TlsMode {
-    Off,
+    Disabled,
     #[default]
-    Auto,
-    Manual {
-        certificate_id: String,
-    },
+    Enabled,
+    Enforced,
 }
 
 pub fn clean_upstream(upstream: &str) -> String {
@@ -27,7 +29,7 @@ pub fn clean_upstream(upstream: &str) -> String {
         .next()
         .unwrap_or(upstream)
         .to_string()
-}
+    }
 
 impl Route {
     pub fn new(hostname: impl Into<String>, upstream: impl Into<String>) -> Self {
@@ -36,7 +38,11 @@ impl Route {
             path_prefix: None,
             upstream: clean_upstream(&upstream.into()),
             tunnel: None,
-            tls: TlsMode::Auto,
+            tls: TlsMode::Enabled,
+            upstream_tls: false,
+            hsts: false,
+            cors_origins: None,
+            forward_ip: true,
         }
     }
 

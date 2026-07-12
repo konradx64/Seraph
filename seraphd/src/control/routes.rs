@@ -25,6 +25,10 @@ pub struct AddRoutePayload {
     pub upstream: String,
     pub tls: Option<TlsMode>,
     pub tunnel: Option<String>,
+    pub upstream_tls: Option<bool>,
+    pub hsts: Option<bool>,
+    pub cors_origins: Option<String>,
+    pub forward_ip: Option<bool>,
 }
 
 // GET /api/routes
@@ -42,6 +46,10 @@ pub async fn add_route(
     let upstream = payload.upstream;
     let tls = payload.tls;
     let tunnel = payload.tunnel;
+    let upstream_tls = payload.upstream_tls.unwrap_or(false);
+    let hsts = payload.hsts.unwrap_or(false);
+    let cors_origins = payload.cors_origins;
+    let forward_ip = payload.forward_ip.unwrap_or(true);
 
     let (hostname, path_prefix) = if let Some(idx) = key.find('/') {
         (key[..idx].to_string(), Some(key[idx..].to_string()))
@@ -54,7 +62,11 @@ pub async fn add_route(
         path_prefix,
         upstream,
         tunnel,
-        tls: tls.unwrap_or(TlsMode::Auto),
+        tls: tls.unwrap_or_default(),
+        upstream_tls,
+        hsts,
+        cors_origins,
+        forward_ip,
     };
 
     let route_key = format!(
@@ -66,7 +78,7 @@ pub async fn add_route(
     match state.db.save_route(&new_route) {
         Ok(_) => match state.db.load_routes() {
             Ok(routes_list) => {
-                let registry = crate::registry::routes::RouteRegistry::new(routes_list);
+                let registry = crate::registry::RouteRegistry::new(routes_list);
                 state.routes.store(Arc::new(registry));
                 let _ = state.events.send(crate::event::Event::RouteAdded { key: route_key });
                 (
@@ -111,7 +123,7 @@ pub async fn delete_route(
     match state.db.delete_route(&hostname, path_prefix.as_deref()) {
         Ok(true) => match state.db.load_routes() {
             Ok(routes_list) => {
-                let registry = crate::registry::routes::RouteRegistry::new(routes_list);
+                let registry = crate::registry::RouteRegistry::new(routes_list);
                 state.routes.store(Arc::new(registry));
                 let _ = state.events.send(crate::event::Event::RouteDeleted { key: route_key });
                 (

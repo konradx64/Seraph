@@ -9,16 +9,19 @@ pub async fn start_acme_worker(state: Arc<AppState>) {
     loop {
         interval.tick().await;
         tracing::info!("Running periodic ACME checks...");
-        let routes = state.routes.load();
-        for route in routes.all() {
-            if matches!(route.tls, crate::route::TlsMode::Auto) {
-                let domain = route.hostname.clone();
-                let state_clone = state.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = run_acme_flow(&state_clone, &domain).await {
-                        tracing::error!("ACME flow failed for {}: {:?}", domain, e);
-                    }
-                });
+        match state.db.load_acme_certs() {
+            Ok(acme_certs) => {
+                for (domain, email) in acme_certs {
+                    let state_clone = state.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = run_acme_flow(&state_clone, &domain, Some(&email)).await {
+                            tracing::error!("ACME flow failed for {}: {:?}", domain, e);
+                        }
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to load ACME certs for periodic checks: {:?}", e);
             }
         }
     }
@@ -30,11 +33,18 @@ pub async fn trigger_refresh(state: Arc<AppState>, domain: String) {
             time: chrono::Local::now().format("%H:%M:%S").to_string(),
             text: format!("Starting manual ACME refresh for domain: {}", domain),
         });
-        match run_acme_flow(&state, &domain).await {
+
+        let email = state.db.load_certs().ok().and_then(|certs| {
+            certs.into_iter()
+                .find(|c| c.sni == domain)
+                .and_then(|c| c.acme_email)
+        });
+
+        match run_acme_flow(&state, &domain, email.as_deref()).await {
             Ok(_) => {
                 let _ = state.events.send(crate::event::Event::Log {
                     time: chrono::Local::now().format("%H:%M:%S").to_string(),
-                    text: format!("Successfully renewed SSL certificate for domain: {}", domain),
+                    text: format!("Successfully renewed TLS certificate for domain: {}", domain),
                 });
                 let _ = state.events.send(crate::event::Event::CertRegistered {
                     sni: domain.clone(),
@@ -51,11 +61,14 @@ pub async fn trigger_refresh(state: Arc<AppState>, domain: String) {
     });
 }
 
-async fn run_acme_flow(state: &AppState, domain: &str) -> anyhow::Result<()> {
+async fn run_acme_flow(state: &AppState, domain: &str, email: Option<&str>) -> anyhow::Result<()> {
     tracing::info!("Running ACME flow for domain: {}", domain);
     
     // 1. Create ACME Account using Let's Encrypt Staging by default
-    let contact_email = format!("mailto:admin@{}", domain);
+    let contact_email = match email {
+        Some(e) => format!("mailto:{}", e),
+        None => format!("mailto:admin@{}", domain),
+    };
     let contact = vec![contact_email.as_str()];
     
     let server_url = "https://acme-staging-v02.api.letsencrypt.org/directory";
@@ -135,13 +148,13 @@ async fn run_acme_flow(state: &AppState, domain: &str) -> anyhow::Result<()> {
     let private_key_pem = cert_key.serialize_pem();
     
     // Save to SQLite certificates table
-    state.db.save_cert(domain, cert_chain_pem.as_bytes(), private_key_pem.as_bytes())?;
+    state.db.save_cert(domain, cert_chain_pem.as_bytes(), private_key_pem.as_bytes(), email)?;
     
     // Reload in-memory registry
     let all_certs = state.db.load_certs()?;
-    let mut registry = crate::registry::certs::CertificateRegistry::new();
-    for (sni, cert_pem, key_pem) in all_certs {
-        let _ = registry.register(&sni, &cert_pem, &key_pem);
+    let mut registry = crate::registry::CertificateRegistry::new();
+    for db_cert in all_certs {
+        let _ = registry.register(&db_cert.sni, &db_cert.cert_pem, &db_cert.key_pem);
     }
     state.certs.store(Arc::new(registry));
     
@@ -152,4 +165,8 @@ async fn run_acme_flow(state: &AppState, domain: &str) -> anyhow::Result<()> {
     }
     
     Ok(())
+}
+
+pub async fn trigger_refresh_with_email(state: Arc<AppState>, domain: String, email: String) -> anyhow::Result<()> {
+    run_acme_flow(&state, &domain, Some(&email)).await
 }

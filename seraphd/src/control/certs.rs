@@ -23,7 +23,7 @@ pub async fn register_cert(
     let cert_pem = payload.cert_pem;
     let key_pem = payload.key_pem;
 
-    match state.db.save_cert(&sni, cert_pem.as_bytes(), key_pem.as_bytes()) {
+    match state.db.save_cert(&sni, cert_pem.as_bytes(), key_pem.as_bytes(), None) {
         Ok(_) => {
             let mut certs = (**state.certs.load()).clone();
             match certs.register(&sni, cert_pem.as_bytes(), key_pem.as_bytes()) {
@@ -64,7 +64,7 @@ pub async fn get_certs(
 ) -> (StatusCode, Json<Vec<String>>) {
     match state.db.load_certs() {
         Ok(certs_list) => {
-            let snis: Vec<String> = certs_list.into_iter().map(|(sni, _, _)| sni).collect();
+            let snis: Vec<String> = certs_list.into_iter().map(|c| c.sni).collect();
             (StatusCode::OK, Json(snis))
         }
         Err(e) => {
@@ -117,7 +117,7 @@ pub async fn generate_cert(
 
     match result {
         Ok((cert_pem, key_pem)) => {
-            if let Err(e) = state.db.save_cert(&sni, cert_pem.as_bytes(), key_pem.as_bytes()) {
+            if let Err(e) = state.db.save_cert(&sni, cert_pem.as_bytes(), key_pem.as_bytes(), None) {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(CommandResponse {
@@ -158,4 +158,39 @@ pub async fn generate_cert(
             }),
         ),
     }
+}
+
+#[derive(Deserialize)]
+pub struct GenerateAcmeCertPayload {
+    pub sni: String,
+    pub email: String,
+}
+
+pub async fn generate_acme_cert(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<GenerateAcmeCertPayload>,
+) -> (StatusCode, Json<CommandResponse>) {
+    let sni = payload.sni;
+    let email = payload.email;
+    let response_sni = sni.clone();
+
+    let state_clone = state.clone();
+    tokio::spawn(async move {
+        let _ = state_clone.events.send(crate::event::Event::Log {
+            time: chrono::Local::now().format("%H:%M:%S").to_string(),
+            text: format!("Requesting Let's Encrypt TLS certificate for domain: {} (email: {})", sni, email),
+        });
+
+        if let Err(e) = crate::acme::trigger_refresh_with_email(state_clone.clone(), sni.clone(), email).await {
+            tracing::error!("ACME generation failed for {}: {:?}", sni, e);
+        }
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(CommandResponse {
+            success: true,
+            message: format!("Let's Encrypt TLS request initiated for {}. Check request logs for challenge status.", response_sni),
+        }),
+    )
 }
