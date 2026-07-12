@@ -1,6 +1,6 @@
 use crate::state::AppState;
 use axum::{
-    routing::{get, post},
+    routing::get,
     Router,
 };
 use std::sync::Arc;
@@ -32,7 +32,7 @@ pub fn start(state: Arc<AppState>) -> anyhow::Result<()> {
                         .post(routes::add_route)
                         .delete(routes::delete_route),
                 )
-                .route("/api/certs", post(certs::register_cert))
+                .route("/api/certs", get(certs::get_certs).post(certs::register_cert))
                 .route("/api/events", get(sse::get_events))
                 .fallback(dashboard::serve_asset)
                 .with_state(state);

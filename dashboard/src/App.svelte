@@ -1,18 +1,21 @@
 <script>
   import { onMount } from 'svelte';
+  import Header from './components/Header.svelte';
+  import OverviewView from './components/OverviewView.svelte';
+  import RoutesView from './components/RoutesView.svelte';
+  import CertsView from './components/CertsView.svelte';
+  import LogsView from './components/LogsView.svelte';
+  import SettingsView from './components/SettingsView.svelte';
+  import { CheckCircle2 } from '@lucide/svelte';
 
-  // State variables using Svelte 5 runes
+  // Shared state variables
   let status = $state("Disconnected");
+  let activeTab = $state("overview");
   let routes = $state([]);
+  let certs = $state([]);
   let logs = $state([]);
   let alertMsg = $state(null);
   let alertSuccess = $state(true);
-
-  // Form inputs
-  let newKey = $state("");
-  let newUpstream = $state("");
-  let newTls = $state("Auto");
-  let newTunnel = $state("");
 
   let eventSource = null;
 
@@ -27,6 +30,17 @@
     }
   }
 
+  async function fetchCerts() {
+    try {
+      const res = await fetch("/api/certs");
+      if (res.ok) {
+        certs = await res.json();
+      }
+    } catch (err) {
+      console.error("Failed to fetch certs:", err);
+    }
+  }
+
   function connectSSE() {
     status = "Connecting...";
     const loc = window.location;
@@ -37,8 +51,9 @@
     
     eventSource.onopen = () => {
       status = "Connected";
-      logs = [...logs, { time: new Date().toLocaleTimeString(), text: "Connected to gateway API" }];
+      logs = [{ time: new Date().toLocaleTimeString(), text: "SSE Event Stream established." }, ...logs];
       fetchRoutes();
+      fetchCerts();
     };
     
     eventSource.onmessage = (event) => {
@@ -57,6 +72,7 @@
         fetchRoutes();
       } else if (msg.type === "CertRegistered") {
         logText = `Certificate registered successfully for ${msg.sni}`;
+        fetchCerts();
       } else {
         logText = JSON.stringify(msg);
       }
@@ -75,16 +91,15 @@
   onMount(() => {
     connectSSE();
     fetchRoutes();
+    fetchCerts();
   });
 
-  async function addRoute() {
-    if (!newKey || !newUpstream) return;
-    
+  async function addRoute(key, upstream, tls, tunnel) {
     const payload = {
-      key: newKey,
-      upstream: newUpstream,
-      tls: newTls,
-      tunnel: newTunnel ? newTunnel : null
+      key,
+      upstream,
+      tls,
+      tunnel: tunnel ? tunnel : null
     };
 
     try {
@@ -106,12 +121,6 @@
       alertSuccess = false;
       setTimeout(() => { alertMsg = null; }, 5000);
     }
-
-    // Reset inputs
-    newKey = "";
-    newUpstream = "";
-    newTls = "Auto";
-    newTunnel = "";
   }
 
   async function deleteRoute(key) {
@@ -131,167 +140,64 @@
     }
   }
 
-  // Formatting key display (hostname + path_prefix)
-  function formatRouteKey(route) {
-    return `${route.hostname}${route.path_prefix || ""}`;
+  async function registerCert(sni, certPem, keyPem) {
+    const payload = {
+      sni,
+      cert_pem: certPem,
+      key_pem: keyPem
+    };
+
+    try {
+      const res = await fetch("/api/certs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const result = await res.json();
+      alertMsg = result.message;
+      alertSuccess = result.success;
+      setTimeout(() => { alertMsg = null; }, 5000);
+      if (res.ok && result.success) {
+        fetchCerts();
+      }
+    } catch (err) {
+      console.error("Failed to register certificate:", err);
+      alertMsg = "Failed to connect to gateway API";
+      alertSuccess = false;
+      setTimeout(() => { alertMsg = null; }, 5000);
+    }
   }
 </script>
 
-<main class="min-h-screen bg-base-200 text-base-content p-6">
-  <!-- Navbar -->
-  <div class="navbar bg-base-100 rounded-box shadow-md mb-6 px-6">
-    <div class="flex-1">
-      <a href="/" class="text-xl font-bold tracking-wider flex items-center gap-2">
-        <span class="text-primary font-black">🌼 Seraph</span>
-        <span class="text-sm font-semibold opacity-50">Gateway Dashboard</span>
-      </a>
-    </div>
-    <div class="flex-none gap-4">
-      <div class="badge badge-lg gap-2 font-bold 
-        {status === 'Connected' ? 'badge-success' : 'badge-warning'}">
-        <span class="w-2 h-2 rounded-full bg-current animate-ping"></span>
-        {status}
-      </div>
-    </div>
-  </div>
+<main class="min-h-screen bg-slate-50 text-slate-800" data-theme="light">
+  <!-- Sticky Header Bar -->
+  <Header {status} bind:activeTab={activeTab} />
 
-  {#if alertMsg}
-    <div class="alert {alertSuccess ? 'alert-success' : 'alert-error'} shadow-lg mb-6">
-      <div>
-        <span>{alertMsg}</span>
-      </div>
-    </div>
-  {/if}
-
-  <!-- Stats Grid -->
-  <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-    <div class="stat bg-base-100 rounded-box shadow">
-      <div class="stat-title">HTTP Proxy Port</div>
-      <div class="stat-value text-primary">8080</div>
-      <div class="stat-desc">Listen Address: 0.0.0.0</div>
-    </div>
-    <div class="stat bg-base-100 rounded-box shadow">
-      <div class="stat-title">HTTPS Proxy Port</div>
-      <div class="stat-value text-secondary">8443</div>
-      <div class="stat-desc">TLS/SNI Resolution: Dynamic</div>
-    </div>
-    <div class="stat bg-base-100 rounded-box shadow">
-      <div class="stat-title">Total Active Routes</div>
-      <div class="stat-value">{routes.length}</div>
-      <div class="stat-desc">Dynamic Config: config.toml</div>
-    </div>
-  </div>
-
-  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-    <!-- Routes List -->
-    <div class="card lg:col-span-2 bg-base-100 shadow-md">
-      <div class="card-body">
-        <h2 class="card-title text-xl mb-4">Active Proxy Routes</h2>
-        <div class="overflow-x-auto">
-          <table class="table w-full">
-            <thead>
-              <tr>
-                <th>Hostname / Prefix</th>
-                <th>Upstream Target</th>
-                <th>TLS Mode</th>
-                <th>Tunnel</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {#each routes as route}
-                <tr class="hover">
-                  <td class="font-mono text-sm">{formatRouteKey(route)}</td>
-                  <td class="font-mono text-sm">{route.upstream}</td>
-                  <td>
-                    <span class="badge {route.tls === 'Auto' ? 'badge-primary' : 'badge-neutral'}">
-                      {route.tls}
-                    </span>
-                  </td>
-                  <td>
-                    {#if route.tunnel}
-                      <span class="badge badge-secondary">{route.tunnel}</span>
-                    {:else}
-                      <span class="opacity-30">—</span>
-                    {/if}
-                  </td>
-                  <td>
-                    <button class="btn btn-error btn-xs btn-outline" onclick={() => deleteRoute(formatRouteKey(route))}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              {:else}
-                <tr>
-                  <td colspan="5" class="text-center py-6 opacity-50">No routes configured</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
+  <!-- Page Body -->
+  <div class="max-w-7xl mx-auto p-6 space-y-6">
+    {#if alertMsg}
+      <div class="alert shadow-xs border 
+        {alertSuccess ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-rose-50 text-rose-800 border-rose-200'}">
+        <div class="flex items-center gap-2">
+          {#if alertSuccess}
+            <CheckCircle2 class="w-4 h-4 text-emerald-600" />
+          {/if}
+          <span class="font-semibold text-sm">{alertMsg}</span>
         </div>
       </div>
-    </div>
+    {/if}
 
-    <!-- Right Column: Add Route & Event Log -->
-    <div class="space-y-6">
-      <!-- Add Route Form -->
-      <div class="card bg-base-100 shadow-md">
-        <div class="card-body">
-          <h2 class="card-title text-xl mb-4">Add New Route</h2>
-          <form onsubmit={(e) => { e.preventDefault(); addRoute(); }} class="space-y-4">
-            <div class="form-control">
-              <label class="label">
-                <span class="label-text">Hostname / Path Key</span>
-              </label>
-              <input type="text" placeholder="e.g. app.localhost/api" class="input input-bordered w-full" bind:value={newKey} required />
-            </div>
-
-            <div class="form-control">
-              <label class="label">
-                <span class="label-text">Upstream Address</span>
-              </label>
-              <input type="text" placeholder="e.g. 127.0.0.1:4000 or http://..." class="input input-bordered w-full" bind:value={newUpstream} required />
-            </div>
-
-            <div class="grid grid-cols-2 gap-4">
-              <div class="form-control">
-                <label class="label">
-                  <span class="label-text">TLS Mode</span>
-                </label>
-                <select class="select select-bordered w-full" bind:value={newTls}>
-                  <option value="Auto">Auto (TLS)</option>
-                  <option value="Off">Off (HTTP)</option>
-                </select>
-              </div>
-
-              <div class="form-control">
-                <label class="label">
-                  <span class="label-text">Tunnel Name (Opt)</span>
-                </label>
-                <input type="text" placeholder="e.g. my-tunnel" class="input input-bordered w-full" bind:value={newTunnel} />
-              </div>
-            </div>
-
-            <button type="submit" class="btn btn-primary w-full mt-4">Register Route</button>
-          </form>
-        </div>
-      </div>
-
-      <!-- Real-time Event Log -->
-      <div class="card bg-base-100 shadow-md">
-        <div class="card-body">
-          <h2 class="card-title text-xl mb-2">Live Gateway Log</h2>
-          <div class="bg-neutral text-neutral-content font-mono text-xs p-4 rounded-box h-48 overflow-y-auto space-y-1">
-            {#each logs as log}
-              <div>
-                <span class="text-neutral-content/40">[{log.time}]</span> {log.text}
-              </div>
-            {:else}
-              <div class="text-neutral-content/40">Waiting for events...</div>
-            {/each}
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- Tab Switching Render -->
+    {#if activeTab === 'overview'}
+      <OverviewView {routes} {certs} {logs} {status} onSwitchTab={(tab) => activeTab = tab} />
+    {:else if activeTab === 'routes'}
+      <RoutesView {routes} onAdd={addRoute} onDelete={deleteRoute} />
+    {:else if activeTab === 'certs'}
+      <CertsView {certs} onRegister={registerCert} />
+    {:else if activeTab === 'logs'}
+      <LogsView bind:logs={logs} />
+    {:else if activeTab === 'settings'}
+      <SettingsView />
+    {/if}
   </div>
 </main>

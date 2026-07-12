@@ -58,3 +58,19 @@ pub async fn register_cert(
         ),
     }
 }
+
+pub async fn get_certs(
+    State(state): State<Arc<AppState>>,
+) -> (StatusCode, Json<Vec<String>>) {
+    match state.db.load_certs() {
+        Ok(certs_list) => {
+            let snis: Vec<String> = certs_list.into_iter().map(|(sni, _, _)| sni).collect();
+            (StatusCode::OK, Json(snis))
+        }
+        Err(e) => {
+            tracing::error!("Failed to load certificates: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::new()))
+        }
+    }
+}
+
