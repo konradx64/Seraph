@@ -1,22 +1,27 @@
 <script>
-  import { Key, Plus } from '@lucide/svelte';
+  import { Key, Plus, Zap } from '@lucide/svelte';
 
   // Svelte 5 props
-  let { certs = [], onRegister, onRefresh } = $props();
+  let { certs = [], onRegister, onRefresh, onGenerate } = $props();
 
   // Local form inputs state
   let newSni = $state("");
   let newCertPem = $state("");
   let newKeyPem = $state("");
+  let generateDomain = $state("");
 
   function handleSubmit() {
     if (!newSni || !newCertPem || !newKeyPem) return;
     onRegister(newSni, newCertPem, newKeyPem);
-    
-    // Reset local form inputs
     newSni = "";
     newCertPem = "";
     newKeyPem = "";
+  }
+
+  function handleGenerate() {
+    if (!generateDomain) return;
+    onGenerate(generateDomain);
+    generateDomain = "";
   }
 </script>
 
@@ -62,39 +67,61 @@
     </div>
   </div>
 
-  <!-- Register Cert Card -->
-  <div class="card bg-white border border-slate-200/80 rounded-xl shadow-xs h-fit">
-    <div class="card-body p-6">
-      <h2 class="text-slate-900 font-bold text-base mb-4 flex items-center gap-2">
-        <Plus class="w-4 h-4 text-cyan-500" />
-        Register SSL Certificate
-      </h2>
-      <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="space-y-4">
-        <div class="form-control">
-          <label class="label py-1" for="cert-sni-input">
-            <span class="label-text text-slate-600 font-bold text-xs">Domain Name (SNI)</span>
-          </label>
-          <input id="cert-sni-input" type="text" placeholder="e.g. app.localhost" class="input input-bordered w-full input-sm rounded-md focus:border-cyan-500 focus:outline-hidden" bind:value={newSni} required />
-        </div>
+  <!-- Sidebar -->
+  <div class="space-y-6">
+    <!-- Quick Generate Card -->
+    <div class="card bg-white border border-slate-200/80 rounded-xl shadow-xs">
+      <div class="card-body p-6">
+        <h2 class="text-slate-900 font-bold text-base mb-4 flex items-center gap-2">
+          <Zap class="w-4 h-4 text-amber-500" />
+          Generate Certificate
+        </h2>
+        <p class="text-slate-500 text-xs mb-3">Create a self-signed certificate instantly for development or internal use.</p>
+        <form onsubmit={(e) => { e.preventDefault(); handleGenerate(); }} class="space-y-3">
+          <div class="form-control">
+            <input id="gen-domain-input" type="text" placeholder="e.g. myapp.local" class="input input-bordered w-full input-sm rounded-md focus:border-amber-500 focus:outline-hidden" bind:value={generateDomain} required />
+          </div>
+          <button type="submit" class="btn btn-sm w-full bg-amber-500 hover:bg-amber-600 border-none rounded-md font-bold text-white shadow-xs">
+            Generate Self-Signed
+          </button>
+        </form>
+      </div>
+    </div>
 
-        <div class="form-control">
-          <label class="label py-1" for="cert-pem-input">
-            <span class="label-text text-slate-600 font-bold text-xs">Certificate PEM Chain</span>
-          </label>
-          <textarea id="cert-pem-input" rows="3" placeholder="-----BEGIN CERTIFICATE-----..." class="textarea textarea-bordered w-full text-xs font-mono rounded-md focus:border-cyan-500 focus:outline-hidden" bind:value={newCertPem} required></textarea>
-        </div>
+    <!-- Manual Upload Card -->
+    <div class="card bg-white border border-slate-200/80 rounded-xl shadow-xs">
+      <div class="card-body p-6">
+        <h2 class="text-slate-900 font-bold text-base mb-4 flex items-center gap-2">
+          <Plus class="w-4 h-4 text-cyan-500" />
+          Upload Certificate
+        </h2>
+        <form onsubmit={(e) => { e.preventDefault(); handleSubmit(); }} class="space-y-4">
+          <div class="form-control">
+            <label class="label py-1" for="cert-sni-input">
+              <span class="label-text text-slate-600 font-bold text-xs">Domain Name (SNI)</span>
+            </label>
+            <input id="cert-sni-input" type="text" placeholder="e.g. app.localhost" class="input input-bordered w-full input-sm rounded-md focus:border-cyan-500 focus:outline-hidden" bind:value={newSni} required />
+          </div>
 
-        <div class="form-control">
-          <label class="label py-1" for="cert-key-input">
-            <span class="label-text text-slate-600 font-bold text-xs">Private Key PEM</span>
-          </label>
-          <textarea id="cert-key-input" rows="3" placeholder="-----BEGIN PRIVATE KEY-----..." class="textarea textarea-bordered w-full text-xs font-mono rounded-md focus:border-cyan-500 focus:outline-hidden" bind:value={newKeyPem} required></textarea>
-        </div>
+          <div class="form-control">
+            <label class="label py-1" for="cert-pem-input">
+              <span class="label-text text-slate-600 font-bold text-xs">Certificate PEM Chain</span>
+            </label>
+            <textarea id="cert-pem-input" rows="3" placeholder="-----BEGIN CERTIFICATE-----..." class="textarea textarea-bordered w-full text-xs font-mono rounded-md focus:border-cyan-500 focus:outline-hidden" bind:value={newCertPem} required></textarea>
+          </div>
 
-        <button type="submit" class="btn btn-sm w-full mt-4 bg-cyan-500 hover:bg-cyan-600 border-none rounded-md font-bold text-white shadow-xs">
-          Save Certificate
-        </button>
-      </form>
+          <div class="form-control">
+            <label class="label py-1" for="cert-key-input">
+              <span class="label-text text-slate-600 font-bold text-xs">Private Key PEM</span>
+            </label>
+            <textarea id="cert-key-input" rows="3" placeholder="-----BEGIN PRIVATE KEY-----..." class="textarea textarea-bordered w-full text-xs font-mono rounded-md focus:border-cyan-500 focus:outline-hidden" bind:value={newKeyPem} required></textarea>
+          </div>
+
+          <button type="submit" class="btn btn-sm w-full mt-4 bg-cyan-500 hover:bg-cyan-600 border-none rounded-md font-bold text-white shadow-xs">
+            Save Certificate
+          </button>
+        </form>
+      </div>
     </div>
   </div>
 </div>

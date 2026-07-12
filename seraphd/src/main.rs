@@ -1,3 +1,4 @@
+mod acme;
 mod app;
 mod config;
 mod control;

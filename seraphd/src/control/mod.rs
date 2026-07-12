@@ -25,6 +25,8 @@ pub fn start(state: Arc<AppState>) -> anyhow::Result<()> {
             .unwrap();
 
         rt.block_on(async {
+            tokio::spawn(crate::acme::start_acme_worker(state.clone()));
+
             let app = Router::new()
                 .route(
                     "/api/routes",
@@ -33,6 +35,8 @@ pub fn start(state: Arc<AppState>) -> anyhow::Result<()> {
                         .delete(routes::delete_route),
                 )
                 .route("/api/certs", get(certs::get_certs).post(certs::register_cert))
+                .route("/api/certs/refresh", axum::routing::post(certs::refresh_cert))
+                .route("/api/certs/generate", axum::routing::post(certs::generate_cert))
                 .route("/api/events", get(sse::get_events))
                 .fallback(dashboard::serve_asset)
                 .with_state(state);

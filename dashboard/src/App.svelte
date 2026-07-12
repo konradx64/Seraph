@@ -186,6 +186,28 @@
       setTimeout(() => { alertMsg = null; }, 5000);
     }
   }
+
+  async function generateCert(sni) {
+    try {
+      const res = await fetch("/api/certs/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sni })
+      });
+      const result = await res.json();
+      alertMsg = result.message;
+      alertSuccess = result.success;
+      setTimeout(() => { alertMsg = null; }, 5000);
+      if (res.ok && result.success) {
+        fetchCerts();
+      }
+    } catch (err) {
+      console.error("Failed to generate certificate:", err);
+      alertMsg = "Failed to connect to gateway API";
+      alertSuccess = false;
+      setTimeout(() => { alertMsg = null; }, 5000);
+    }
+  }
 </script>
 
 <main class="min-h-screen bg-slate-50 text-slate-800" data-theme="light">
@@ -212,7 +234,7 @@
     {:else if activeTab === 'routes'}
       <RoutesView {routes} onAdd={addRoute} onDelete={deleteRoute} />
     {:else if activeTab === 'certs'}
-      <CertsView {certs} onRegister={registerCert} onRefresh={refreshCert} />
+      <CertsView {certs} onRegister={registerCert} onRefresh={refreshCert} onGenerate={generateCert} />
     {:else if activeTab === 'logs'}
       <LogsView bind:logs={logs} />
     {:else if activeTab === 'settings'}

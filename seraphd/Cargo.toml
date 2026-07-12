@@ -21,3 +21,7 @@ mime_guess = "2.0.5"
 arc-swap = "1.7.1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
+instant-acme = "0.7"
+rcgen = { version = "0.13", features = ["pem"] }
+chrono = "0.4"
+bytes = "1.0"

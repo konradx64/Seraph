@@ -21,5 +21,9 @@ pub enum Event {
     CertRegistered {
         sni: String,
     },
+    Log {
+        time: String,
+        text: String,
+    },
 }
 
