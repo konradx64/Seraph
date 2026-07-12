@@ -2,7 +2,6 @@
   import { onMount } from 'svelte';
 
   // State variables using Svelte 5 runes
-  let ws = $state(null);
   let status = $state("Disconnected");
   let routes = $state([]);
   let logs = $state([]);
@@ -15,51 +14,70 @@
   let newTls = $state("Auto");
   let newTunnel = $state("");
 
-  function connect() {
-    status = "Connecting...";
-    // In production, we connect to the same host/port that served the page
-    const loc = window.location;
-    const wsProto = loc.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProto}//${loc.host}/ws`;
-    
-    ws = new WebSocket(wsUrl);
+  let eventSource = null;
 
-    ws.onopen = () => {
-      status = "Connected";
-      routes = [];
-      logs = [...logs, { time: new Date().toLocaleTimeString(), text: "Connected to gateway API" }];
-    };
-
-    ws.onclose = () => {
-      status = "Disconnected";
-      logs = [...logs, { time: new Date().toLocaleTimeString(), text: "Disconnected from gateway API" }];
-      setTimeout(connect, 3000); // Auto reconnect
-    };
-
-    ws.onerror = (err) => {
-      console.error(err);
-      status = "Error";
-    };
-
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      if (msg.event === "RoutesList") {
-        routes = msg.payload;
-      } else if (msg.event === "CommandResult") {
-        alertMsg = msg.payload.message;
-        alertSuccess = msg.payload.success;
-        setTimeout(() => { alertMsg = null; }, 5000);
-      } else if (msg.event === "SystemEvent") {
-        logs = [{ time: new Date().toLocaleTimeString(), text: `[${msg.payload.event_type}] ${msg.payload.message}` }, ...logs];
+  async function fetchRoutes() {
+    try {
+      const res = await fetch("/api/routes");
+      if (res.ok) {
+        routes = await res.json();
       }
+    } catch (err) {
+      console.error("Failed to fetch routes:", err);
+    }
+  }
+
+  function connectSSE() {
+    status = "Connecting...";
+    const loc = window.location;
+    const proto = loc.protocol;
+    const sseUrl = `${proto}//${loc.host}/api/events`;
+    
+    eventSource = new EventSource(sseUrl);
+    
+    eventSource.onopen = () => {
+      status = "Connected";
+      logs = [...logs, { time: new Date().toLocaleTimeString(), text: "Connected to gateway API" }];
+      fetchRoutes();
+    };
+    
+    eventSource.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+      let logText = "";
+      
+      if (msg.type === "RequestHit") {
+        logText = `Proxy: ${msg.host} ${msg.method} ${msg.path} -> ${msg.upstream}`;
+      } else if (msg.type === "RequestMiss") {
+        logText = `Proxy 404: ${msg.host} ${msg.method} ${msg.path} (No route)`;
+      } else if (msg.type === "RouteAdded") {
+        logText = `Route for ${msg.key} was added`;
+        fetchRoutes();
+      } else if (msg.type === "RouteDeleted") {
+        logText = `Route for ${msg.key} was deleted`;
+        fetchRoutes();
+      } else if (msg.type === "CertRegistered") {
+        logText = `Certificate registered successfully for ${msg.sni}`;
+      } else {
+        logText = JSON.stringify(msg);
+      }
+      
+      logs = [{ time: new Date().toLocaleTimeString(), text: logText }, ...logs];
+    };
+
+    eventSource.onerror = (err) => {
+      console.error("SSE connection error:", err);
+      status = "Disconnected";
+      eventSource.close();
+      setTimeout(connectSSE, 3000);
     };
   }
 
   onMount(() => {
-    connect();
+    connectSSE();
+    fetchRoutes();
   });
 
-  function addRoute() {
+  async function addRoute() {
     if (!newKey || !newUpstream) return;
     
     const payload = {
@@ -69,10 +87,25 @@
       tunnel: newTunnel ? newTunnel : null
     };
 
-    ws.send(JSON.stringify({
-      action: "AddRoute",
-      payload: payload
-    }));
+    try {
+      const res = await fetch("/api/routes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const result = await res.json();
+      alertMsg = result.message;
+      alertSuccess = result.success;
+      setTimeout(() => { alertMsg = null; }, 5000);
+      if (res.ok && result.success) {
+        fetchRoutes();
+      }
+    } catch (err) {
+      console.error("Failed to add route:", err);
+      alertMsg = "Failed to connect to gateway API";
+      alertSuccess = false;
+      setTimeout(() => { alertMsg = null; }, 5000);
+    }
 
     // Reset inputs
     newKey = "";
@@ -81,11 +114,21 @@
     newTunnel = "";
   }
 
-  function deleteRoute(key) {
-    ws.send(JSON.stringify({
-      action: "DeleteRoute",
-      payload: { key }
-    }));
+  async function deleteRoute(key) {
+    try {
+      const res = await fetch(`/api/routes?key=${encodeURIComponent(key)}`, {
+        method: "DELETE"
+      });
+      const result = await res.json();
+      alertMsg = result.message;
+      alertSuccess = result.success;
+      setTimeout(() => { alertMsg = null; }, 5000);
+      if (res.ok && result.success) {
+        fetchRoutes();
+      }
+    } catch (err) {
+      console.error("Failed to delete route:", err);
+    }
   }
 
   // Formatting key display (hostname + path_prefix)

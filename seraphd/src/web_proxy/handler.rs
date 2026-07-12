@@ -42,12 +42,16 @@ impl ProxyHttp for WebProxyHandler {
         let matched = routes.match_route(host, path);
 
         let peer = matched.as_ref().map(|route| {
-            Box::new(HttpPeer::new(&route.upstream, false, route.hostname.clone()))
+            Box::new(HttpPeer::new(
+                &route.upstream,
+                false,
+                route.hostname.clone(),
+            ))
         });
 
         match &matched {
             Some(route) => {
-                self.state.events.publish(crate::event::Event::RequestHit {
+                let _ = self.state.events.send(crate::event::Event::RequestHit {
                     host: host.to_string(),
                     method: session.req_header().method.to_string(),
                     path: path.to_string(),
@@ -55,7 +59,7 @@ impl ProxyHttp for WebProxyHandler {
                 });
             }
             None => {
-                self.state.events.publish(crate::event::Event::RequestMiss {
+                let _ = self.state.events.send(crate::event::Event::RequestMiss {
                     host: host.to_string(),
                     method: session.req_header().method.to_string(),
                     path: path.to_string(),

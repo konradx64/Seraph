@@ -1,6 +1,7 @@
 use super::route::Route;
 use crate::web_proxy::WebProxyServer;
-use crate::{config::AppConfig, route_registry::RouteRegistry, state::AppState};
+use crate::db::Database;
+use crate::{config::AppConfig, state::AppState, registry::{certs::CertificateRegistry, routes::RouteRegistry}};
 use std::sync::Arc;
 
 pub fn run() -> anyhow::Result<()> {
@@ -10,23 +11,36 @@ pub fn run() -> anyhow::Result<()> {
         AppConfig::load_from_file(config_path)?
     } else {
         tracing::info!("config.toml not found, generating default config");
-        let route = Route::new("localhost", "http://127.0.0.1:3000");
-        let mut default_config = AppConfig::default();
-        default_config.hostnames.insert(
-            route.hostname.clone(),
-            crate::config::RouteConfig {
-                path_prefix: route.path_prefix.clone(),
-                upstream: route.upstream.clone(),
-                tunnel: route.tunnel.clone(),
-                tls: route.tls.clone(),
-            },
-        );
+        let default_config = AppConfig::default();
         default_config.save_to_file(config_path)?;
         default_config
     };
 
-    let routes = RouteRegistry::new(config.routes());
-    let state = Arc::new(AppState::new(config, routes, config_path.to_path_buf()));
+    // Initialize Database
+    tracing::info!("opening database at {}", config.database_path);
+    let db = Database::open(&config.database_path)?;
+
+    // Load dynamic state from DB
+    let mut routes_list = db.load_routes()?;
+    if routes_list.is_empty() {
+        tracing::info!("database is empty, inserting default route");
+        let default_route = Route::new("localhost", "http://127.0.0.1:3000");
+        db.save_route(&default_route)?;
+        routes_list.push(default_route);
+    }
+
+    let certs_list = db.load_certs()?;
+
+    // Populate registries
+    let routes = RouteRegistry::new(routes_list);
+    let mut certs = CertificateRegistry::new();
+    for (sni, cert_pem, key_pem) in certs_list {
+        if let Err(e) = certs.register(&sni, &cert_pem, &key_pem) {
+            tracing::error!("failed to load certificate for {}: {}", sni, e);
+        }
+    }
+
+    let state = Arc::new(AppState::new(config, db, routes, certs));
 
     tracing::info!("seraphd starting");
     tracing::info!("http listener: {}", state.config.http_addr);
@@ -40,3 +54,4 @@ pub fn run() -> anyhow::Result<()> {
 
     Ok(())
 }
+

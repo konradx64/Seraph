@@ -1,11 +1,4 @@
 http_addr = "0.0.0.0:8080"
 https_addr = "0.0.0.0:8443"
 admin_addr = "127.0.0.1:9090"
-
-["dashboard.localhost"]
-upstream = "10.12.2.5:3100"
-tls = "Auto"
-
-[test]
-upstream = "10.12.2.5"
-tls = "Auto"
+database_path = "seraph.db"

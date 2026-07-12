@@ -1,10 +1,10 @@
 mod app;
-mod cert_registry;
 mod config;
 mod control;
+mod db;
 mod event;
+mod registry;
 mod route;
-mod route_registry;
 mod state;
 mod web_proxy;
 

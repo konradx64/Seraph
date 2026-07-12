@@ -1,4 +1,4 @@
-use super::route::Route;
+use crate::route::Route;
 
 #[derive(Debug, Clone)]
 pub struct RouteRegistry {
@@ -21,17 +21,5 @@ impl RouteRegistry {
     pub fn all(&self) -> &[Route] {
         &self.routes
     }
-
-    pub fn register(&mut self, route: Route) {
-        self.routes
-            .retain(|r| !(r.hostname == route.hostname && r.path_prefix == route.path_prefix));
-        self.routes.push(route);
-    }
-
-    pub fn remove(&mut self, hostname: &str, path_prefix: Option<&str>) -> bool {
-        let original_len = self.routes.len();
-        self.routes
-            .retain(|r| !(r.hostname == hostname && r.path_prefix.as_deref() == path_prefix));
-        self.routes.len() < original_len
-    }
 }
+
