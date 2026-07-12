@@ -11,6 +11,9 @@ pub struct AppState {
     pub events: tokio::sync::broadcast::Sender<Event>,
     pub acme_challenges: RwLock<HashMap<String, String>>,
     pub stats: crate::stats::Stats,
+    pub active_tunnels: std::sync::Arc<tokio::sync::RwLock<HashMap<String, quinn::Connection>>>,
+    pub active_route_listeners: std::sync::Mutex<std::collections::HashSet<String>>,
+    pub ca: std::sync::Arc<crate::tunnel::ca::TunnelCa>,
 }
 
 impl AppState {
@@ -19,6 +22,7 @@ impl AppState {
         db: Database,
         routes: RouteRegistry,
         certs: CertificateRegistry,
+        ca: crate::tunnel::ca::TunnelCa,
     ) -> Self {
         let (events, _) = tokio::sync::broadcast::channel(100);
         Self {
@@ -29,6 +33,9 @@ impl AppState {
             events,
             acme_challenges: RwLock::new(HashMap::new()),
             stats: crate::stats::Stats::default(),
+            active_tunnels: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
+            active_route_listeners: std::sync::Mutex::new(std::collections::HashSet::new()),
+            ca: std::sync::Arc::new(ca),
         }
     }
 }

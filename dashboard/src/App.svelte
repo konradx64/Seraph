@@ -20,13 +20,15 @@
     ChevronDown,
     Globe,
     ArrowRight,
-    Clock
+    Clock,
+    Link
   } from '@lucide/svelte';
 
   // Shared state variables
   let status = $state("Disconnected");
   let routes = $state([]);
   let certs = $state([]);
+  let tunnels = $state([]);
   let logs = $state([]);
   let alertMsg = $state(null);
   let alertSuccess = $state(true);
@@ -61,7 +63,7 @@
   let rUpstream = $state("");
   let rUpstreamTls = $state("http");
   let rTls = $state("Enabled");
-  let rTunnel = $state(false);
+  let rTunnel = $state("");
   let rHsts = $state(false);
   let rCorsOrigins = $state("");
   let rForwardIp = $state(true);
@@ -74,6 +76,24 @@
   let uSni = $state("");
   let uCertPem = $state("");
   let uKeyPem = $state("");
+
+  // Form local state variables (Tunnels)
+  let tName = $state("");
+  let generatedKey = $state("");
+  let generatedKeyTunnelId = $state("");
+
+  let tunnelStatsHistory = {};
+  let tunnelBandwidth = $state({});
+
+  function formatBytes(bytes, isSpeed = false) {
+    if (bytes === 0) return isSpeed ? "0 B/s" : "0 B";
+    const k = 1024;
+    const sizes = isSpeed 
+      ? ["B/s", "KB/s", "MB/s", "GB/s", "TB/s"] 
+      : ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  }
 
   let searchQuery = $state("");
   let eventSource = null;
@@ -100,6 +120,44 @@
     }
   }
 
+  async function fetchTunnels() {
+    try {
+      const res = await fetch("/api/tunnels");
+      if (res.ok) {
+        const data = await res.json();
+        const now = Date.now();
+        const nextBandwidth = {};
+        for (const t of data) {
+          const prev = tunnelStatsHistory[t.id];
+          if (prev) {
+            const elapsed = (now - prev.time) / 1000;
+            if (elapsed > 0.2) {
+              const sent_diff = t.bytes_sent - prev.bytes_sent;
+              const recv_diff = t.bytes_received - prev.bytes_received;
+              nextBandwidth[t.id] = {
+                upload: Math.max(0, Math.round(sent_diff / elapsed)),
+                download: Math.max(0, Math.round(recv_diff / elapsed))
+              };
+            } else {
+              nextBandwidth[t.id] = tunnelBandwidth[t.id] || { upload: 0, download: 0 };
+            }
+          } else {
+            nextBandwidth[t.id] = { upload: 0, download: 0 };
+          }
+          tunnelStatsHistory[t.id] = {
+            bytes_sent: t.bytes_sent,
+            bytes_received: t.bytes_received,
+            time: now
+          };
+        }
+        tunnelBandwidth = nextBandwidth;
+        tunnels = data;
+      }
+    } catch (err) {
+      console.error("Failed to fetch tunnels:", err);
+    }
+  }
+
 
 
   function connectSSE() {
@@ -115,6 +173,7 @@
       logs = [{ time: new Date().toLocaleTimeString(), text: "Event stream connected successfully." }, ...logs];
       fetchRoutes();
       fetchCerts();
+      fetchTunnels();
     };
     
     eventSource.onmessage = (event) => {
@@ -134,6 +193,12 @@
       } else if (msg.type === "CertRegistered") {
         logText = `SSL Certificate stored for SNI: ${msg.sni}`;
         fetchCerts();
+      } else if (msg.type === "TunnelConnected") {
+        logText = `QUIC Tunnel agent connected: ${msg.id}`;
+        fetchTunnels();
+      } else if (msg.type === "TunnelDisconnected") {
+        logText = `QUIC Tunnel agent disconnected: ${msg.id}`;
+        fetchTunnels();
       } else if (msg.type === "Log") {
         logText = msg.text;
       } else if (msg.type === "StatsUpdate") {
@@ -148,6 +213,42 @@
         };
         // Keep the last 15 data points for a smooth line chart
         rpsHistory = [...rpsHistory.slice(-14), msg.rps || 0];
+
+        // Process live tunnel bandwidth
+        const now = Date.now();
+        const nextBandwidth = { ...tunnelBandwidth };
+        if (msg.tunnels) {
+          for (const [id, t] of Object.entries(msg.tunnels)) {
+            const prev = tunnelStatsHistory[id];
+            if (prev) {
+              const elapsed = (now - prev.time) / 1000;
+              if (elapsed > 0.2) {
+                const sent_diff = t.bytes_sent - prev.bytes_sent;
+                const recv_diff = t.bytes_received - prev.bytes_received;
+                nextBandwidth[id] = {
+                  upload: Math.max(0, Math.round(sent_diff / elapsed)),
+                  download: Math.max(0, Math.round(recv_diff / elapsed))
+                };
+              }
+            } else {
+              nextBandwidth[id] = { upload: 0, download: 0 };
+            }
+            tunnelStatsHistory[id] = {
+              bytes_sent: t.bytes_sent,
+              bytes_received: t.bytes_received,
+              time: now
+            };
+
+            // Update local totals
+            const idx = tunnels.findIndex(item => item.id === id);
+            if (idx !== -1) {
+              tunnels[idx].bytes_sent = t.bytes_sent;
+              tunnels[idx].bytes_received = t.bytes_received;
+            }
+          }
+          tunnelBandwidth = nextBandwidth;
+        }
+
         return; // Skip logs list append for stats updates
       } else {
         logText = JSON.stringify(msg);
@@ -168,6 +269,10 @@
     connectSSE();
     fetchRoutes();
     fetchCerts();
+    fetchTunnels();
+
+    const interval = setInterval(fetchTunnels, 5000);
+    return () => clearInterval(interval);
   });
 
   function startCreateRoute() {
@@ -177,7 +282,7 @@
     rUpstream = "";
     rUpstreamTls = "http";
     rTls = "Enabled";
-    rTunnel = false;
+    rTunnel = "";
     rHsts = false;
     rCorsOrigins = "";
     rForwardIp = true;
@@ -190,7 +295,7 @@
     rHost = route.hostname;
     rUpstream = route.upstream;
     rUpstreamTls = route.upstream_tls ? "https" : "http";
-    rTunnel = route.tunnel === "true" || route.tunnel === true;
+    rTunnel = route.tunnel || "";
     rTls = route.tls || "Enabled";
     rHsts = route.hsts || false;
     rCorsOrigins = route.cors_origins || "";
@@ -215,7 +320,7 @@
       key: rHost,
       upstream: rUpstream,
       tls: rTls,
-      tunnel: rTunnel ? "true" : null,
+      tunnel: rTunnel || null,
       upstream_tls: rUpstreamTls === "https",
       hsts: rHsts,
       cors_origins: rCorsOrigins || null,
@@ -317,6 +422,58 @@
       alertMsg = "Failed to connect to gateway API";
       alertSuccess = false;
       setTimeout(() => { alertMsg = null; }, 5000);
+    }
+  }
+
+  async function createTunnel() {
+    if (!tName) return;
+    try {
+      const res = await fetch("/api/tunnels", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: tName })
+      });
+      if (res.ok) {
+        const result = await res.json();
+        generatedKey = result.token;
+        generatedKeyTunnelId = result.id;
+        tName = "";
+        fetchTunnels();
+        document.getElementById('add_tunnel_modal').close();
+        document.getElementById('tunnel_key_modal').showModal();
+      } else {
+        const errText = await res.text();
+        alertMsg = "Failed to create tunnel: " + errText;
+        alertSuccess = false;
+        setTimeout(() => { alertMsg = null; }, 5000);
+      }
+    } catch (err) {
+      console.error("Failed to create tunnel:", err);
+      alertMsg = "Failed to connect to gateway API";
+      alertSuccess = false;
+      setTimeout(() => { alertMsg = null; }, 5000);
+    }
+  }
+
+  async function deleteTunnel(id) {
+    if (!confirm(`Are you sure you want to delete tunnel "${id}"? This will disconnect any active agent immediately.`)) return;
+    try {
+      const res = await fetch(`/api/tunnels?id=${encodeURIComponent(id)}`, {
+        method: "DELETE"
+      });
+      if (res.ok) {
+        alertMsg = `Tunnel "${id}" deleted successfully.`;
+        alertSuccess = true;
+        setTimeout(() => { alertMsg = null; }, 5000);
+        fetchTunnels();
+      } else {
+        const errText = await res.text();
+        alertMsg = "Failed to delete tunnel: " + errText;
+        alertSuccess = false;
+        setTimeout(() => { alertMsg = null; }, 5000);
+      }
+    } catch (err) {
+      console.error("Failed to delete tunnel:", err);
     }
   }
 
@@ -509,7 +666,12 @@
                   {#each routes as route (route.hostname)}
                     <tr class="border-slate-200 hover:bg-slate-50">
                       <td class="font-mono font-bold text-slate-800">{route.hostname}</td>
-                      <td class="font-mono text-slate-500">{route.upstream_tls ? 'https://' : 'http://'}{route.upstream}</td>
+                      <td class="font-mono text-slate-500">
+                        {route.upstream_tls ? 'https://' : 'http://'}{route.upstream}
+                        {#if route.tunnel && route.tunnel !== 'true'}
+                          <span class="badge badge-xs bg-slate-100 border-none text-[9px] text-slate-400 font-bold ml-1.5 px-1.5 py-0.5">TUNNEL: {route.tunnel}</span>
+                        {/if}
+                      </td>
                       
                       <!-- Status (Online/Offline) -->
                       <td>
@@ -616,6 +778,103 @@
                   {:else}
                     <tr>
                       <td colspan="3" class="text-center py-10 text-slate-400 text-xs">No active TLS certificates registered.</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- QUIC Tunnels Registry -->
+        <div class="card bg-white border border-slate-200 rounded-xl">
+          <div class="card-body p-6">
+            <div class="flex items-center justify-between mb-4">
+              <h2 class="text-slate-900 font-bold text-sm uppercase tracking-wider flex items-center gap-2">
+                <Link class="w-4.5 h-4.5 text-cyan-500" />
+                QUIC Tunnels
+              </h2>
+              <button class="btn btn-xs bg-cyan-50 hover:bg-cyan-100 text-cyan-600 border-none rounded-md px-3 py-2 flex items-center gap-1.5 font-extrabold text-xs" 
+                onclick={() => document.getElementById('add_tunnel_modal').showModal()}>
+                <Plus class="w-4 h-4" />
+                Add Tunnel
+              </button>
+            </div>
+            
+            <div class="overflow-x-auto">
+              <table class="table table-sm w-full">
+                <thead>
+                  <tr class="text-slate-400 border-slate-200 text-xs uppercase">
+                    <th>Tunnel ID</th>
+                    <th>Status</th>
+                    <th>Enrollment Key</th>
+                    <th>Traffic Total</th>
+                    <th>Bandwidth (Live)</th>
+                    <th>Created At</th>
+                    <th class="w-20 text-right"></th>
+                  </tr>
+                </thead>
+                <tbody class="text-slate-700 text-sm">
+                  {#each tunnels as tunnel (tunnel.id)}
+                    <tr class="border-slate-200 hover:bg-slate-50">
+                      <td class="font-mono font-bold text-slate-800">{tunnel.id}</td>
+                      <td>
+                        {#if tunnel.status === 'Online'}
+                          <span class="badge badge-xs p-1.5 text-emerald-700 bg-emerald-50 border-emerald-200 font-bold text-[10px] flex items-center gap-1 w-fit">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span> Online
+                          </span>
+                        {:else}
+                          <span class="badge badge-xs p-1.5 text-slate-500 bg-slate-50 border-slate-200 font-bold text-[10px] flex items-center gap-1 w-fit">
+                            <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span> Offline
+                          </span>
+                        {/if}
+                      </td>
+                      <td>
+                        {#if tunnel.client_cert}
+                          <span class="text-emerald-600 font-medium text-xs">Enrolled ✓</span>
+                        {:else}
+                          <div class="flex items-center gap-1.5">
+                            <span class="text-amber-600 font-bold text-xs">Pending:</span>
+                            <code class="text-xs bg-slate-100 px-1.5 py-0.5 rounded-md font-mono text-slate-600">{tunnel.token.slice(0, 10)}...</code>
+                            <button class="btn btn-ghost btn-xs text-[10px] px-1.5 py-0.5 rounded-md text-cyan-600 font-extrabold hover:bg-cyan-50 border border-slate-200/50"
+                              onclick={() => {
+                                generatedKey = tunnel.token;
+                                generatedKeyTunnelId = tunnel.id;
+                                document.getElementById('tunnel_key_modal').showModal();
+                              }}>Show Key</button>
+                          </div>
+                        {/if}
+                      </td>
+                      <td>
+                        {#if tunnel.status === 'Online' || tunnel.bytes_sent > 0 || tunnel.bytes_received > 0}
+                          <div class="flex flex-col text-[11px] font-mono leading-tight">
+                            <span class="text-slate-600">↑ {formatBytes(tunnel.bytes_sent || 0)}</span>
+                            <span class="text-slate-500">↓ {formatBytes(tunnel.bytes_received || 0)}</span>
+                          </div>
+                        {:else}
+                          <span class="text-xs text-slate-400">—</span>
+                        {/if}
+                      </td>
+                      <td>
+                        {#if tunnel.status === 'Online'}
+                          <div class="flex flex-col text-[11px] font-mono leading-tight text-cyan-600 font-bold">
+                            <span>↑ {formatBytes(tunnelBandwidth[tunnel.id]?.upload || 0, true)}</span>
+                            <span>↓ {formatBytes(tunnelBandwidth[tunnel.id]?.download || 0, true)}</span>
+                          </div>
+                        {:else}
+                          <span class="text-xs text-slate-400">—</span>
+                        {/if}
+                      </td>
+                      <td class="text-xs text-slate-400 font-mono">{new Date(tunnel.created_at).toLocaleString()}</td>
+                      <td class="text-right">
+                        <button class="btn btn-ghost btn-xs text-rose-500 hover:bg-rose-50 rounded-md p-1" onclick={() => deleteTunnel(tunnel.id)}>
+                          <Trash2 class="w-4.5 h-4.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  {:else}
+                    <tr>
+                      <td colspan="7" class="text-center py-10 text-slate-400 text-xs">No active tunnels configured. Click "Add Tunnel" to generate an enrollment key.</td>
                     </tr>
                   {/each}
                 </tbody>
@@ -830,9 +1089,14 @@
           <input type="checkbox" class="checkbox checkbox-xs checkbox-cyan rounded-md" bind:checked={rForwardIp} />
         </div>
 
-        <div class="form-control flex flex-row items-center justify-between bg-white p-2.5 rounded-lg border border-slate-200 mt-2">
-          <span class="text-xs font-bold text-slate-500">Tunnel Connection</span>
-          <input type="checkbox" class="checkbox checkbox-xs checkbox-cyan rounded-md" bind:checked={rTunnel} />
+        <div class="form-control mt-2">
+          <label class="label py-0.5" for="m-route-tunnel"><span class="label-text text-xs font-bold text-slate-500">Tunnel (Optional)</span></label>
+          <select id="m-route-tunnel" class="select select-bordered select-sm rounded-md w-full focus:border-cyan-500 focus:outline-hidden text-xs" bind:value={rTunnel}>
+            <option value="">-- Direct Upstream (No Tunnel) --</option>
+            {#each tunnels as tunnel}
+              <option value={tunnel.id}>{tunnel.id} ({tunnel.status === 'Online' ? 'Online 🟢' : 'Offline ⚪'})</option>
+            {/each}
+          </select>
         </div>
 
         <button type="submit" class="btn btn-sm w-full bg-cyan-500 hover:bg-cyan-600 border-none rounded-md font-bold text-white mt-4">
@@ -928,6 +1192,85 @@
           </button>
         </form>
       {/if}
+    </div>
+    <form method="dialog" class="modal-backdrop bg-slate-900/30">
+      <button>close</button>
+    </form>
+  </dialog>
+
+  <!-- DIALOG MODAL 3: ADD TUNNEL OVERLAY -->
+  <dialog id="add_tunnel_modal" class="modal">
+    <div class="modal-box bg-white max-w-sm rounded-xl p-6 border border-slate-200">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+        <h3 class="font-black text-sm uppercase text-slate-800 tracking-wider flex items-center gap-2">
+          <Link class="w-4.5 h-4.5 text-cyan-500" />
+          Create New Tunnel
+        </h3>
+        <button class="btn btn-ghost btn-xs text-slate-400 rounded-md p-1" onclick={() => document.getElementById('add_tunnel_modal').close()}>
+          <X class="w-4 h-4" />
+        </button>
+      </div>
+
+      <form onsubmit={(e) => { e.preventDefault(); createTunnel(); }}>
+        <div class="form-control">
+          <label class="label py-0.5" for="m-tunnel-name"><span class="label-text text-xs font-bold text-slate-500">Tunnel ID / Name</span></label>
+          <input id="m-tunnel-name" type="text" placeholder="e.g. office-server" class="input input-bordered input-sm rounded-md w-full focus:border-cyan-500 focus:outline-hidden text-xs" bind:value={tName} required />
+          <span class="text-[9.5px] text-slate-400 mt-1">Unique identifier representing the target machine or environment.</span>
+        </div>
+
+        <button type="submit" class="btn btn-sm w-full bg-cyan-500 hover:bg-cyan-600 border-none rounded-md font-bold text-white mt-4">
+          Generate Enrollment Key
+        </button>
+      </form>
+    </div>
+    <form method="dialog" class="modal-backdrop bg-slate-900/30">
+      <button>close</button>
+    </form>
+  </dialog>
+
+  <!-- DIALOG MODAL 4: SHOW ENROLLMENT KEY AND COMMANDS -->
+  <dialog id="tunnel_key_modal" class="modal">
+    <div class="modal-box bg-white max-w-md rounded-xl p-6 border border-slate-200">
+      <div class="flex items-center justify-between border-b border-slate-100 pb-3 mb-4">
+        <h3 class="font-black text-sm uppercase text-slate-800 tracking-wider flex items-center gap-2">
+          <CheckCircle2 class="w-4.5 h-4.5 text-emerald-500" />
+          Tunnel Key Generated
+        </h3>
+        <button class="btn btn-ghost btn-xs text-slate-400 rounded-md p-1" onclick={() => document.getElementById('tunnel_key_modal').close()}>
+          <X class="w-4 h-4" />
+        </button>
+      </div>
+
+      <div class="space-y-4">
+        <div class="bg-emerald-50 text-emerald-800 text-xs rounded-lg p-3 border border-emerald-100 leading-relaxed">
+          Tunnel <strong>{generatedKeyTunnelId}</strong> created successfully. Copy the enrollment key below to configure and authorize your remote agent.
+        </div>
+
+        <div class="form-control">
+          <span class="text-xs font-bold text-slate-500 mb-1">Enrollment Key</span>
+          <div class="flex gap-2">
+            <input type="text" readonly class="input input-bordered input-sm rounded-md w-full bg-slate-50 font-mono text-xs focus:outline-hidden" value={generatedKey} id="tunnel-key-input" />
+            <button class="btn btn-sm bg-cyan-500 hover:bg-cyan-600 border-none text-white font-bold rounded-md px-3 text-xs" 
+              onclick={() => {
+                const el = document.getElementById('tunnel-key-input');
+                el.select();
+                navigator.clipboard.writeText(generatedKey);
+                alertMsg = "Key copied to clipboard!";
+                alertSuccess = true;
+                setTimeout(() => { alertMsg = null; }, 3000);
+              }}>
+              Copy
+            </button>
+          </div>
+        </div>
+
+        <div class="border-t border-slate-100 pt-4">
+          <span class="text-xs font-bold text-slate-700 block mb-1.5">How to start the agent:</span>
+          <div class="bg-slate-900 rounded-lg p-3 text-slate-300 font-mono text-[10.5px] leading-relaxed relative group overflow-x-auto">
+            seraph-agent --server {window.location.hostname}:7700 --key {generatedKey}
+          </div>
+        </div>
+      </div>
     </div>
     <form method="dialog" class="modal-backdrop bg-slate-900/30">
       <button>close</button>

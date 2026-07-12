@@ -36,7 +36,7 @@ impl ProxyHttp for WebProxyHandler {
         ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
         let path = session.req_header().uri.path().to_string();
-        
+
         // 1. Serve ACME challenge first
         if path.starts_with("/.well-known/acme-challenge/") {
             let token = path.trim_start_matches("/.well-known/acme-challenge/");
@@ -46,15 +46,22 @@ impl ProxyHttp for WebProxyHandler {
             };
             if let Some(auth) = key_auth {
                 tracing::info!("Serving ACME challenge for token: {}", token);
-                let mut response = pingora::http::ResponseHeader::build(
-                    pingora::http::StatusCode::OK,
-                    Some(4),
-                ).unwrap();
-                response.insert_header("Content-Type", "text/plain").unwrap();
-                response.insert_header("Content-Length", auth.len().to_string()).unwrap();
-                
-                session.write_response_header(Box::new(response), false).await?;
-                session.write_response_body(Some(bytes::Bytes::from(auth.into_bytes())), true).await?;
+                let mut response =
+                    pingora::http::ResponseHeader::build(pingora::http::StatusCode::OK, Some(4))
+                        .unwrap();
+                response
+                    .insert_header("Content-Type", "text/plain")
+                    .unwrap();
+                response
+                    .insert_header("Content-Length", auth.len().to_string())
+                    .unwrap();
+
+                session
+                    .write_response_header(Box::new(response), false)
+                    .await?;
+                session
+                    .write_response_body(Some(bytes::Bytes::from(auth.into_bytes())), true)
+                    .await?;
                 return Ok(true);
             }
         }
@@ -85,20 +92,28 @@ impl ProxyHttp for WebProxyHandler {
             let is_tls = session.req_header().uri.scheme_str() == Some("https");
             if route.tls == crate::route::TlsMode::Enforced && !is_tls {
                 tracing::info!("Redirecting HTTP request to HTTPS for host: {}", host);
-                
+
                 let mut response = pingora::http::ResponseHeader::build(
                     pingora::http::StatusCode::MOVED_PERMANENTLY,
                     Some(0),
-                ).unwrap();
+                )
+                .unwrap();
 
-                let query = session.req_header().uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+                let query = session
+                    .req_header()
+                    .uri
+                    .query()
+                    .map(|q| format!("?{}", q))
+                    .unwrap_or_default();
                 let location = format!("https://{}:8443{}{}", host, path, query);
-                
+
                 response.insert_header("Location", location).unwrap();
                 response.insert_header("Content-Length", "0").unwrap();
 
-                session.write_response_header(Box::new(response), true).await?;
-                
+                session
+                    .write_response_header(Box::new(response), true)
+                    .await?;
+
                 let _ = self.state.events.send(crate::event::Event::RequestHit {
                     host: host.to_string(),
                     method: session.req_header().method.to_string(),
@@ -149,14 +164,60 @@ impl ProxyHttp for WebProxyHandler {
             }
         }
 
-        let peer = matched.as_ref().map(|route| {
+        let mut peer = None;
+        if let Some(route) = &matched {
             ctx.matched_host = Some(route.hostname.clone());
-            Box::new(HttpPeer::new(
-                &route.upstream,
-                route.upstream_tls,
-                route.hostname.clone(),
-            ))
-        });
+            if let Some(tunnel_id) = &route.tunnel {
+                if tunnel_id == "true" {
+                    let socket_path = format!("tunnels/{}.sock", route.hostname);
+                    let uds_peer = HttpPeer::new_uds(&socket_path, false, route.hostname.clone())
+                        .map_err(|e| {
+                        pingora::Error::explain(
+                            pingora::ErrorType::InternalError,
+                            format!("UDS peer error: {:?}", e),
+                        )
+                    })?;
+                    peer = Some(Box::new(uds_peer));
+                } else if !tunnel_id.is_empty() {
+                    let tunnels_dir = std::path::Path::new("tunnels");
+                    crate::tunnel::listener::ensure_route_listener(
+                        &self.state,
+                        &route.hostname,
+                        &route.upstream,
+                        tunnel_id,
+                        tunnels_dir,
+                    )
+                    .map_err(|e| {
+                        pingora::Error::explain(
+                            pingora::ErrorType::InternalError,
+                            format!("Failed to ensure route socket: {:?}", e),
+                        )
+                    })?;
+
+                    let socket_path = format!("tunnels/route-{}.sock", route.hostname);
+                    let uds_peer = HttpPeer::new_uds(&socket_path, false, route.hostname.clone())
+                        .map_err(|e| {
+                        pingora::Error::explain(
+                            pingora::ErrorType::InternalError,
+                            format!("UDS peer error: {:?}", e),
+                        )
+                    })?;
+                    peer = Some(Box::new(uds_peer));
+                } else {
+                    peer = Some(Box::new(HttpPeer::new(
+                        &route.upstream,
+                        route.upstream_tls,
+                        route.hostname.clone(),
+                    )));
+                }
+            } else {
+                peer = Some(Box::new(HttpPeer::new(
+                    &route.upstream,
+                    route.upstream_tls,
+                    route.hostname.clone(),
+                )));
+            }
+        }
 
         match &matched {
             Some(route) => {
@@ -195,13 +256,15 @@ impl ProxyHttp for WebProxyHandler {
             .response_written()
             .map(|resp| resp.status.as_u16())
             .unwrap_or(502);
-        
+
         self.state.stats.record_request(status);
 
         if let Some(host) = &ctx.matched_host {
             let latency_ms = ctx.start_time.elapsed().as_millis() as u64;
             let is_connection_failure = e.is_some() || status == 502 || status == 504;
-            self.state.stats.record_route_request(host, latency_ms, is_connection_failure);
+            self.state
+                .stats
+                .record_route_request(host, latency_ms, is_connection_failure);
         }
     }
 
@@ -223,7 +286,7 @@ impl ProxyHttp for WebProxyHandler {
                         let _ = upstream_request.insert_header("X-Real-IP", &client_ip);
                         let _ = upstream_request.insert_header("X-Forwarded-For", &client_ip);
                     }
-                    
+
                     let is_tls = session.req_header().uri.scheme_str() == Some("https");
                     let proto = if is_tls { "https" } else { "http" };
                     let _ = upstream_request.insert_header("X-Forwarded-Proto", proto);
@@ -251,9 +314,16 @@ impl ProxyHttp for WebProxyHandler {
 
                 if let Some(origins) = &route.cors_origins {
                     if !origins.is_empty() {
-                        let _ = upstream_response.insert_header("Access-Control-Allow-Origin", origins);
-                        let _ = upstream_response.insert_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH");
-                        let _ = upstream_response.insert_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+                        let _ =
+                            upstream_response.insert_header("Access-Control-Allow-Origin", origins);
+                        let _ = upstream_response.insert_header(
+                            "Access-Control-Allow-Methods",
+                            "GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH",
+                        );
+                        let _ = upstream_response.insert_header(
+                            "Access-Control-Allow-Headers",
+                            "Content-Type, Authorization, X-Requested-With",
+                        );
                     }
                 }
             }

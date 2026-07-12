@@ -11,12 +11,48 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 use rustls::RootCertStore;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
+use pingora::services::background::BackgroundService;
+use async_trait::async_trait;
 
 use super::ca::TunnelCa;
 
 /// Default UDP port for the QUIC tunnel listener.
 pub const TUNNEL_PORT: u16 = 7700;
+
+pub struct QuicTunnelService {
+    state: Arc<crate::state::AppState>,
+}
+
+impl QuicTunnelService {
+    pub fn new(state: Arc<crate::state::AppState>) -> Self {
+        Self { state }
+    }
+}
+
+#[async_trait]
+impl BackgroundService for QuicTunnelService {
+    async fn start(&self, mut shutdown: pingora::server::ShutdownWatch) {
+        let tunnels_dir = std::path::PathBuf::from("tunnels");
+        let _ = std::fs::create_dir_all(&tunnels_dir);
+
+        let tunnel_addr: std::net::SocketAddr = "0.0.0.0:7700".parse().unwrap();
+        match TunnelListener::bind(tunnel_addr, &self.state.ca) {
+            Ok(tunnel_listener) => {
+                tokio::select! {
+                    _ = tunnel_listener.run(tunnels_dir, self.state.clone()) => {}
+                    _ = shutdown.changed() => {
+                        tracing::info!("QUIC tunnel background service received shutdown signal");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to bind QUIC tunnel endpoint: {:?}", e);
+            }
+        }
+    }
+}
 
 /// Wraps the Quinn endpoint and exposes an `accept` method.
 pub struct TunnelListener {
@@ -25,11 +61,6 @@ pub struct TunnelListener {
 
 impl TunnelListener {
     /// Create a new QUIC endpoint and start listening.
-    ///
-    /// The server generates a self-signed TLS certificate for its own identity
-    /// (agents verify this against the CA cert they received at registration).
-    /// The server in turn requires a valid client certificate signed by the
-    /// Seraph Tunnel CA (`ca`) for every incoming connection.
     pub fn bind(addr: SocketAddr, ca: &TunnelCa) -> Result<Self> {
         let server_config = build_server_config(ca)
             .context("Failed to build QUIC server TLS config")?;
@@ -41,16 +72,13 @@ impl TunnelListener {
         Ok(Self { endpoint })
     }
 
-    /// Accept the next incoming QUIC connection.
-    pub async fn accept(&self) -> Option<Incoming> {
-        self.endpoint.accept().await
-    }
-
     /// Spawn a long-running task that accepts and dispatches tunnel connections.
-    pub async fn run(self) {
+    pub async fn run(self, tunnels_dir: PathBuf, state: Arc<crate::state::AppState>) {
         tracing::info!("Tunnel listener running");
         while let Some(incoming) = self.endpoint.accept().await {
-            tokio::spawn(handle_connection(incoming));
+            let dir = tunnels_dir.clone();
+            let state_clone = state.clone();
+            tokio::spawn(handle_connection(incoming, dir, state_clone));
         }
         tracing::warn!("Tunnel listener stopped accepting connections");
     }
@@ -60,66 +88,133 @@ impl TunnelListener {
 // Connection handler
 // ---------------------------------------------------------------------------
 
-async fn handle_connection(incoming: Incoming) {
+async fn handle_connection(incoming: Incoming, _tunnels_dir: PathBuf, state: Arc<crate::state::AppState>) {
     let remote = incoming.remote_address();
 
     match incoming.await {
         Ok(conn) => {
-            let agent_id = extract_agent_id(&conn);
-            tracing::info!(
-                "Tunnel agent '{}' connected from {}",
-                agent_id.as_deref().unwrap_or("<unknown>"),
-                remote,
-            );
-            handle_streams(conn, agent_id).await;
+            if let Some(agent_id) = extract_agent_id(&conn) {
+                tracing::info!("Tunnel agent '{}' connected from {}", agent_id, remote);
+
+                // Register connection in active tunnels map
+                {
+                    let mut tunnels = state.active_tunnels.write().await;
+                    tunnels.insert(agent_id.clone(), conn.clone());
+                }
+                let _ = state.events.send(crate::event::Event::TunnelConnected { id: agent_id.clone() });
+
+                // Keep connection alive, wait until disconnected
+                let _ = conn.closed().await;
+
+                // Deregister connection
+                {
+                    let mut tunnels = state.active_tunnels.write().await;
+                    tunnels.remove(&agent_id);
+                }
+                let _ = state.events.send(crate::event::Event::TunnelDisconnected { id: agent_id.clone() });
+
+                tracing::info!("Tunnel agent '{}' disconnected", agent_id);
+            } else {
+                tracing::warn!("Rejecting connection from {}: could not extract agent ID", remote);
+            }
         }
         Err(e) => {
-            // Connection rejected at the TLS handshake (e.g. invalid cert)
             tracing::warn!("Tunnel connection from {} rejected: {}", remote, e);
         }
     }
 }
 
-async fn handle_streams(conn: quinn::Connection, agent_id: Option<String>) {
-    loop {
-        match conn.accept_bi().await {
-            Ok((send, recv)) => {
-                let id = agent_id.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = dispatch_stream(send, recv, id).await {
-                        tracing::warn!("Tunnel stream error: {}", e);
-                    }
-                });
-            }
-            Err(e) => {
-                tracing::info!(
-                    "Agent '{}' disconnected: {}",
-                    agent_id.as_deref().unwrap_or("<unknown>"),
-                    e
-                );
-                break;
-            }
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// Dynamic Route-specific Unix Socket Listener Spawning
+// ---------------------------------------------------------------------------
 
-async fn dispatch_stream(
-    _send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
-    agent_id: Option<String>,
+pub fn ensure_route_listener(
+    state: &Arc<crate::state::AppState>,
+    hostname: &str,
+    upstream: &str,
+    tunnel_id: &str,
+    tunnels_dir: &std::path::Path,
 ) -> Result<()> {
-    // Read the first 4 bytes as a frame type tag
-    let mut tag = [0u8; 4];
-    recv.read_exact(&mut tag).await
-        .context("Failed to read stream tag")?;
+    {
+        let mut listeners = state.active_route_listeners.lock().unwrap();
+        if listeners.contains(hostname) {
+            return Ok(());
+        }
+        listeners.insert(hostname.to_string());
+    }
 
-    tracing::debug!(
-        "Stream from agent '{}': tag={:?}",
-        agent_id.as_deref().unwrap_or("<unknown>"),
-        tag,
-    );
+    let socket_path = tunnels_dir.join(format!("route-{}.sock", hostname));
+    let _ = std::fs::remove_file(&socket_path);
 
-    // TODO: dispatch to tunnel protocol handlers based on `tag`
+    let listener = tokio::net::UnixListener::bind(&socket_path)
+        .context("Failed to bind route Unix socket")?;
+
+    let state_clone = state.clone();
+    let hostname_clone = hostname.to_string();
+    let upstream_clone = upstream.to_string();
+    let tunnel_id_clone = tunnel_id.to_string();
+    let socket_path_clone = socket_path.clone();
+
+    tokio::spawn(async move {
+        tracing::info!("Started Unix listener for route '{}' targeting upstream '{}' via tunnel '{}'", hostname_clone, upstream_clone, tunnel_id_clone);
+
+        while let Ok((mut local_stream, _)) = listener.accept().await {
+            let state = state_clone.clone();
+            let tunnel_id = tunnel_id_clone.clone();
+            let upstream = upstream_clone.clone();
+
+            tokio::spawn(async move {
+                // Fetch the active QUIC connection for this tunnel_id
+                let conn_opt = {
+                    let tunnels = state.active_tunnels.read().await;
+                    tunnels.get(&tunnel_id).cloned()
+                };
+
+                if let Some(conn) = conn_opt {
+                    match conn.open_bi().await {
+                        Ok((mut send_stream, recv_stream)) => {
+                            let header = format!("{}\n", upstream);
+                            if let Err(e) = send_stream.write_all(header.as_bytes()).await {
+                                tracing::error!("Failed to write upstream header to tunnel stream: {}", e);
+                                return;
+                            }
+
+                            // Wrap QUIC streams in byte counters
+                            let mut counting_recv = CountingReader {
+                                inner: recv_stream,
+                                tunnel_id: tunnel_id.clone(),
+                                state: state.clone(),
+                            };
+                            let mut counting_send = CountingWriter {
+                                inner: send_stream,
+                                tunnel_id: tunnel_id.clone(),
+                                state: state.clone(),
+                            };
+
+                            // Bridge the local connection and the QUIC stream
+                            let (mut local_read, mut local_write) = local_stream.split();
+                            let bridge_read = tokio::io::copy(&mut counting_recv, &mut local_write);
+                            let bridge_write = tokio::io::copy(&mut local_read, &mut counting_send);
+
+                            let _ = tokio::join!(bridge_read, bridge_write);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to open QUIC stream on tunnel '{}': {}", tunnel_id, e);
+                        }
+                    }
+                } else {
+                    tracing::warn!("Tunnel '{}' is offline; dropping local stream", tunnel_id);
+                }
+            });
+        }
+
+        // Cleanup on stop
+        let mut listeners = state_clone.active_route_listeners.lock().unwrap();
+        listeners.remove(&hostname_clone);
+        let _ = std::fs::remove_file(socket_path_clone);
+        tracing::info!("Stopped Unix listener for route '{}'", hostname_clone);
+    });
+
     Ok(())
 }
 
@@ -185,3 +280,65 @@ fn build_server_config(ca: &TunnelCa) -> Result<ServerConfig> {
 
     Ok(server_config)
 }
+
+struct CountingReader<R> {
+    inner: R,
+    tunnel_id: String,
+    state: Arc<crate::state::AppState>,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for CountingReader<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let res = std::pin::Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let std::task::Poll::Ready(Ok(())) = &res {
+            let after = buf.filled().len();
+            let n = after - before;
+            if n > 0 {
+                self.state.stats.record_tunnel_traffic(&self.tunnel_id, 0, n as u64);
+            }
+        }
+        res
+    }
+}
+
+struct CountingWriter<W> {
+    inner: W,
+    tunnel_id: String,
+    state: Arc<crate::state::AppState>,
+}
+
+impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for CountingWriter<W> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        let res = std::pin::Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let std::task::Poll::Ready(Ok(n)) = &res {
+            if *n > 0 {
+                self.state.stats.record_tunnel_traffic(&self.tunnel_id, *n as u64, 0);
+            }
+        }
+        res
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+

@@ -49,6 +49,18 @@ pub struct RouteStatsSnapshot {
 }
 
 #[derive(Debug)]
+pub struct TunnelStats {
+    pub bytes_sent: AtomicU64,
+    pub bytes_received: AtomicU64,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct TunnelStatsSnapshot {
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+}
+
+#[derive(Debug)]
 pub struct Stats {
     pub total_requests: AtomicU64,
     pub status_2xx: AtomicU64,
@@ -56,6 +68,7 @@ pub struct Stats {
     pub status_4xx: AtomicU64,
     pub status_5xx: AtomicU64,
     pub route_stats: RwLock<HashMap<String, RouteStats>>,
+    pub tunnel_stats: RwLock<HashMap<String, TunnelStats>>,
 }
 
 impl Default for Stats {
@@ -67,6 +80,7 @@ impl Default for Stats {
             status_4xx: AtomicU64::new(0),
             status_5xx: AtomicU64::new(0),
             route_stats: RwLock::new(HashMap::new()),
+            tunnel_stats: RwLock::new(HashMap::new()),
         }
     }
 }
@@ -79,6 +93,7 @@ pub struct StatsResponse {
     pub status_4xx: u64,
     pub status_5xx: u64,
     pub routes: HashMap<String, RouteStatsSnapshot>,
+    pub tunnels: HashMap<String, TunnelStatsSnapshot>,
 }
 
 impl Stats {
@@ -90,6 +105,16 @@ impl Stats {
                 routes_map.insert(host.clone(), rstats.get_snapshot());
             }
         }
+        let mut tunnels_map = HashMap::new();
+        {
+            let guard = self.tunnel_stats.read().unwrap();
+            for (id, tstats) in guard.iter() {
+                tunnels_map.insert(id.clone(), TunnelStatsSnapshot {
+                    bytes_sent: tstats.bytes_sent.load(Ordering::Relaxed),
+                    bytes_received: tstats.bytes_received.load(Ordering::Relaxed),
+                });
+            }
+        }
 
         StatsResponse {
             total_requests: self.total_requests.load(Ordering::Relaxed),
@@ -98,6 +123,7 @@ impl Stats {
             status_4xx: self.status_4xx.load(Ordering::Relaxed),
             status_5xx: self.status_5xx.load(Ordering::Relaxed),
             routes: routes_map,
+            tunnels: tunnels_map,
         }
     }
 
@@ -128,6 +154,25 @@ impl Stats {
             let rstats = RouteStats::new(!is_connection_failure);
             rstats.record(latency_ms, is_connection_failure);
             write_guard.insert(host.to_string(), rstats);
+        }
+    }
+
+    pub fn record_tunnel_traffic(&self, id: &str, sent: u64, received: u64) {
+        {
+            let read_guard = self.tunnel_stats.read().unwrap();
+            if let Some(tstats) = read_guard.get(id) {
+                tstats.bytes_sent.fetch_add(sent, Ordering::Relaxed);
+                tstats.bytes_received.fetch_add(received, Ordering::Relaxed);
+                return;
+            }
+        }
+        {
+            let mut write_guard = self.tunnel_stats.write().unwrap();
+            let tstats = TunnelStats {
+                bytes_sent: AtomicU64::new(sent),
+                bytes_received: AtomicU64::new(received),
+            };
+            write_guard.insert(id.to_string(), tstats);
         }
     }
 }

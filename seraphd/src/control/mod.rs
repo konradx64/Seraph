@@ -9,6 +9,7 @@ use tracing::info;
 pub mod dashboard;
 pub mod routes;
 pub mod certs;
+pub mod tunnels;
 pub mod sse;
 
 pub fn start(state: Arc<AppState>) -> anyhow::Result<()> {
@@ -47,6 +48,7 @@ pub fn start(state: Arc<AppState>) -> anyhow::Result<()> {
                         status_5xx: snap.status_5xx,
                         rps,
                         routes: snap.routes,
+                        tunnels: snap.tunnels,
                     });
                 }
             });
@@ -62,6 +64,13 @@ pub fn start(state: Arc<AppState>) -> anyhow::Result<()> {
                 .route("/api/certs/refresh", axum::routing::post(certs::refresh_cert))
                 .route("/api/certs/generate", axum::routing::post(certs::generate_cert))
                 .route("/api/certs/acme", axum::routing::post(certs::generate_acme_cert))
+                .route(
+                    "/api/tunnels",
+                    get(tunnels::get_tunnels)
+                        .post(tunnels::create_tunnel)
+                        .delete(tunnels::delete_tunnel),
+                )
+                .route("/api/tunnels/enroll", axum::routing::post(tunnels::enroll_tunnel))
                 .route("/api/events", get(sse::get_events))
                 .fallback(dashboard::serve_asset)
                 .with_state(state);

@@ -21,6 +21,12 @@ pub enum Event {
     CertRegistered {
         sni: String,
     },
+    TunnelConnected {
+        id: String,
+    },
+    TunnelDisconnected {
+        id: String,
+    },
     Log {
         time: String,
         text: String,
@@ -33,6 +39,7 @@ pub enum Event {
         status_5xx: u64,
         rps: u64,
         routes: std::collections::HashMap<String, crate::stats::RouteStatsSnapshot>,
+        tunnels: std::collections::HashMap<String, crate::stats::TunnelStatsSnapshot>,
     },
 }
 

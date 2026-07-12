@@ -40,7 +40,11 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
 
-    let state = Arc::new(AppState::new(config, db, routes, certs));
+    // Initialize Tunnel CA
+    let data_dir = std::path::Path::new("data");
+    let ca = crate::tunnel::ca::TunnelCa::load_or_create(data_dir)?;
+
+    let state = Arc::new(AppState::new(config, db, routes, certs, ca));
 
     tracing::info!("seraphd starting");
     tracing::info!("http listener: {}", state.config.http_addr);

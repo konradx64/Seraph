@@ -3,6 +3,7 @@ use std::sync::Mutex;
 
 mod routes;
 mod certs;
+mod tunnels;
 
 pub struct Database {
     conn: Mutex<Connection>,
@@ -46,6 +47,16 @@ impl Database {
         )?;
         // Migration: Add acme_email if it doesn't exist
         let _ = conn.execute("ALTER TABLE certificates ADD COLUMN acme_email TEXT", []);
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tunnels (
+                id TEXT PRIMARY KEY,
+                token TEXT NOT NULL,
+                client_cert TEXT,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
         Ok(())
     }
 }
