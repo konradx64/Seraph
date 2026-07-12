@@ -167,6 +167,25 @@
       setTimeout(() => { alertMsg = null; }, 5000);
     }
   }
+
+  async function refreshCert(sni) {
+    try {
+      const res = await fetch("/api/certs/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sni })
+      });
+      const result = await res.json();
+      alertMsg = result.message;
+      alertSuccess = result.success;
+      setTimeout(() => { alertMsg = null; }, 5000);
+    } catch (err) {
+      console.error("Failed to trigger cert refresh:", err);
+      alertMsg = "Failed to connect to gateway API";
+      alertSuccess = false;
+      setTimeout(() => { alertMsg = null; }, 5000);
+    }
+  }
 </script>
 
 <main class="min-h-screen bg-slate-50 text-slate-800" data-theme="light">
@@ -193,7 +212,7 @@
     {:else if activeTab === 'routes'}
       <RoutesView {routes} onAdd={addRoute} onDelete={deleteRoute} />
     {:else if activeTab === 'certs'}
-      <CertsView {certs} onRegister={registerCert} />
+      <CertsView {certs} onRegister={registerCert} onRefresh={refreshCert} />
     {:else if activeTab === 'logs'}
       <LogsView bind:logs={logs} />
     {:else if activeTab === 'settings'}

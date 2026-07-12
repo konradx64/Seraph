@@ -2,7 +2,7 @@
   import { Key, Plus } from '@lucide/svelte';
 
   // Svelte 5 props
-  let { certs = [], onRegister } = $props();
+  let { certs = [], onRegister, onRefresh } = $props();
 
   // Local form inputs state
   let newSni = $state("");
@@ -31,9 +31,10 @@
       <div class="overflow-x-auto">
         <table class="table table-sm w-full">
           <thead>
-            <tr class="text-slate-400 border-slate-200/80">
+            <tr class="text-slate-400 border-slate-100">
               <th>Domain Name (SNI)</th>
               <th>Status</th>
+              <th class="w-24 text-right">Actions</th>
             </tr>
           </thead>
           <tbody class="text-slate-700 text-sm">
@@ -43,10 +44,16 @@
                 <td>
                   <span class="badge badge-sm text-emerald-700 border border-emerald-200/60 font-bold text-[10px]">Active</span>
                 </td>
+                <td class="text-right">
+                  <button class="btn btn-xs btn-outline rounded-md border-slate-200 hover:border-cyan-400 hover:bg-cyan-50/50 hover:text-cyan-700 font-bold text-[10px]" 
+                    onclick={() => onRefresh(cert)}>
+                    Refresh
+                  </button>
+                </td>
               </tr>
             {:else}
               <tr>
-                <td colspan="2" class="text-center py-12 text-slate-400 text-sm">No SSL certificates registered in database.</td>
+                <td colspan="3" class="text-center py-12 text-slate-400 text-sm">No SSL certificates registered in database.</td>
               </tr>
             {/each}
           </tbody>
