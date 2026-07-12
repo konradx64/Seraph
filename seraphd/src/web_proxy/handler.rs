@@ -1,7 +1,7 @@
 use pingora::upstreams::peer::HttpPeer;
 use pingora_proxy::{ProxyHttp, Session};
 
-use crate::state::AppState;
+use crate::{state::AppState, tunnel::peer::TunnelPeer};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -168,48 +168,14 @@ impl ProxyHttp for WebProxyHandler {
         if let Some(route) = &matched {
             ctx.matched_host = Some(route.hostname.clone());
             if let Some(tunnel_id) = &route.tunnel {
-                if tunnel_id == "true" {
-                    let socket_path = format!("tunnels/{}.sock", route.hostname);
-                    let uds_peer = HttpPeer::new_uds(&socket_path, false, route.hostname.clone())
-                        .map_err(|e| {
-                        pingora::Error::explain(
-                            pingora::ErrorType::InternalError,
-                            format!("UDS peer error: {:?}", e),
-                        )
-                    })?;
-                    peer = Some(Box::new(uds_peer));
-                } else if !tunnel_id.is_empty() {
-                    let tunnels_dir = std::path::Path::new("tunnels");
-                    crate::tunnel::listener::ensure_route_listener(
-                        &self.state,
-                        &route.hostname,
-                        &route.upstream,
-                        tunnel_id,
-                        tunnels_dir,
-                    )
-                    .map_err(|e| {
-                        pingora::Error::explain(
-                            pingora::ErrorType::InternalError,
-                            format!("Failed to ensure route socket: {:?}", e),
-                        )
-                    })?;
-
-                    let socket_path = format!("tunnels/route-{}.sock", route.hostname);
-                    let uds_peer = HttpPeer::new_uds(&socket_path, false, route.hostname.clone())
-                        .map_err(|e| {
-                        pingora::Error::explain(
-                            pingora::ErrorType::InternalError,
-                            format!("UDS peer error: {:?}", e),
-                        )
-                    })?;
-                    peer = Some(Box::new(uds_peer));
-                } else {
-                    peer = Some(Box::new(HttpPeer::new(
-                        &route.upstream,
-                        route.upstream_tls,
-                        route.hostname.clone(),
-                    )));
-                }
+                let tunnel_peer = TunnelPeer::new(
+                    self.state.clone(),
+                    tunnel_id,
+                    &route.upstream,
+                    route.upstream_tls,
+                    &route.hostname,
+                );
+                peer = Some(Box::new(tunnel_peer.into_http_peer()));
             } else {
                 peer = Some(Box::new(HttpPeer::new(
                     &route.upstream,

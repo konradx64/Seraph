@@ -1,7 +1,12 @@
-use crate::{config::AppConfig, db::Database, event::Event, registry::{CertificateRegistry, RouteRegistry}};
+use crate::{
+    config::AppConfig,
+    db::Database,
+    event::Event,
+    registry::{CertificateRegistry, RouteRegistry},
+};
 use arc_swap::ArcSwap;
-use std::sync::RwLock;
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 pub struct AppState {
     pub config: AppConfig,
