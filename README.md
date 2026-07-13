@@ -1,6 +1,13 @@
 # Seraph
 
-A reverse proxy daemon built with Rust and Pingora, featuring an admin dashboard.
+<p align="center">
+  <img src="dashboard/public/favicon.png" alt="Seraph Logo" width="120" />
+</p>
+
+<p align="center">
+  A self-hosted reverse proxy with QUIC tunneling, TLS automation, and a real-time dashboard.
+</p>
+
 
 ## Components
 
