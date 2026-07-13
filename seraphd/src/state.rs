@@ -17,7 +17,6 @@ pub struct AppState {
     pub acme_challenges: RwLock<HashMap<String, String>>,
     pub stats: crate::stats::Stats,
     pub active_tunnels: std::sync::Arc<tokio::sync::RwLock<HashMap<String, quinn::Connection>>>,
-    pub active_route_listeners: std::sync::Mutex<std::collections::HashSet<String>>,
     pub ca: std::sync::Arc<crate::tunnel::ca::TunnelCa>,
 }
 
@@ -39,7 +38,6 @@ impl AppState {
             acme_challenges: RwLock::new(HashMap::new()),
             stats: crate::stats::Stats::default(),
             active_tunnels: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
-            active_route_listeners: std::sync::Mutex::new(std::collections::HashSet::new()),
             ca: std::sync::Arc::new(ca),
         }
     }

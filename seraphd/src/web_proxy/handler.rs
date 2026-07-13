@@ -37,7 +37,6 @@ impl ProxyHttp for WebProxyHandler {
     ) -> pingora::Result<bool> {
         let path = session.req_header().uri.path().to_string();
 
-        // 1. Serve ACME challenge first
         if path.starts_with("/.well-known/acme-challenge/") {
             let token = path.trim_start_matches("/.well-known/acme-challenge/");
             let key_auth = {
@@ -66,7 +65,6 @@ impl ProxyHttp for WebProxyHandler {
             }
         }
 
-        // 2. Fetch Host header to verify redirection requirements
         let host = session
             .req_header()
             .uri
@@ -88,7 +86,6 @@ impl ProxyHttp for WebProxyHandler {
         if let Some(route) = matched {
             ctx.matched_host = Some(route.hostname.clone());
 
-            // 3. Force HTTP -> HTTPS redirect if TlsMode::Enforced and client connects over plain HTTP
             let is_tls = session.req_header().uri.scheme_str() == Some("https");
             if route.tls == crate::route::TlsMode::Enforced && !is_tls {
                 tracing::info!("Redirecting HTTP request to HTTPS for host: {}", host);
@@ -154,7 +151,6 @@ impl ProxyHttp for WebProxyHandler {
         let matched = routes.match_route(host, path);
 
         if let Some(route) = &matched {
-            // Block HTTPS connections if route is configured as HTTP only
             let is_tls = session.req_header().uri.scheme_str() == Some("https");
             if route.tls == crate::route::TlsMode::Disabled && is_tls {
                 return Err(pingora::Error::explain(

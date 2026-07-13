@@ -45,8 +45,6 @@ impl TunnelPeer {
             target: self.target,
         };
 
-        // Diese Adresse wird nicht wirklich verbunden.
-        // TunnelConnector::connect() ignoriert sie.
         let mut peer = HttpPeer::new("0.0.0.0:0", self.upstream_tls, self.sni);
 
         peer.group_key = group_key;
@@ -155,12 +153,15 @@ impl AsyncWrite for TunnelSocket {
     ) -> Poll<io::Result<usize>> {
         let result = AsyncWrite::poll_write(Pin::new(&mut self.send), cx, buffer);
 
-        if let Poll::Ready(Ok(written)) = &result {
-            if *written > 0 {
-                self.state
-                    .stats
-                    .record_tunnel_traffic(&self.tunnel_id, *written as u64, 0);
-            }
+        let written = match &result {
+            Poll::Ready(Ok(n)) => *n,
+            _ => 0,
+        };
+
+        if written > 0 {
+            self.state
+                .stats
+                .record_tunnel_traffic(&self.tunnel_id, written as u64, 0);
         }
 
         result

@@ -1,9 +1,6 @@
 //! Tunnel Certificate Authority
 //!
-//! Seraph acts as a mini-CA for the QUIC tunnel. On first boot it generates a
-//! self-signed CA keypair and persists it to disk. When an agent is registered,
-//! Seraph issues a signed client certificate that the agent must present during
-//! the mTLS handshake of every QUIC connection.
+//! Generates a self-signed CA and issues client certificates for tunnel agents.
 
 use anyhow::{Context, Result};
 use rcgen::{
@@ -16,7 +13,7 @@ use time::OffsetDateTime;
 const CA_CERT_FILE: &str = "tunnel_ca.crt";
 const CA_KEY_FILE: &str = "tunnel_ca.key";
 
-/// Paths to the persisted CA files.
+
 pub struct CaPaths {
     pub cert: PathBuf,
     pub key: PathBuf,
@@ -35,7 +32,7 @@ impl CaPaths {
     }
 }
 
-/// The loaded, in-memory CA used to sign client certificates.
+
 pub struct TunnelCa {
     pub cert_pem: String,
     pub cert: Certificate,
@@ -43,7 +40,6 @@ pub struct TunnelCa {
 }
 
 impl TunnelCa {
-    /// Load an existing CA from disk, or generate and persist a new one.
     pub fn load_or_create(data_dir: &Path) -> Result<Self> {
         let paths = CaPaths::new(data_dir);
 
@@ -57,8 +53,6 @@ impl TunnelCa {
             let key_pair = KeyPair::from_pem(&key_pem)
                 .context("Failed to parse tunnel CA key")?;
 
-            // Re-generate the Certificate object from the stored key so we can
-            // use it for signing. The on-disk PEM is the authoritative cert.
             let cert = Self::build_ca_params()?.self_signed(&key_pair)?;
 
             Ok(Self { cert_pem, cert, key_pair })
@@ -102,8 +96,6 @@ impl TunnelCa {
     }
 
     /// Issue a signed client certificate for a named agent.
-    ///
-    /// Returns `(cert_pem, key_pem)` ready to be sent to the agent.
     pub fn issue_agent_cert(&self, agent_id: &str) -> Result<(String, String)> {
         let agent_key = KeyPair::generate()?;
 

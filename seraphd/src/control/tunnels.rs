@@ -13,12 +13,12 @@ pub struct TunnelListItem {
     pub token: Option<String>,
     pub client_cert: Option<String>,
     pub created_at: String,
-    pub status: String, // "Online" or "Offline"
+    pub status: String,
     pub bytes_sent: u64,
     pub bytes_received: u64,
 }
 
-// GET /api/tunnels
+
 pub async fn get_tunnels(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<TunnelListItem>>, (StatusCode, String)> {
@@ -80,7 +80,6 @@ pub struct CreateTunnelResponse {
     pub token: String,
 }
 
-// POST /api/tunnels
 pub async fn create_tunnel(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CreateTunnelPayload>,
@@ -93,7 +92,6 @@ pub async fn create_tunnel(
         ));
     }
 
-    // Generate a secure 32-character random key
     use rand::Rng;
     let token: String = rand::thread_rng()
         .sample_iter(&rand::distributions::Alphanumeric)
@@ -121,7 +119,7 @@ pub struct DeleteTunnelParams {
     pub id: String,
 }
 
-// DELETE /api/tunnels
+
 pub async fn delete_tunnel(
     State(state): State<Arc<AppState>>,
     Query(params): Query<DeleteTunnelParams>,
@@ -133,7 +131,6 @@ pub async fn delete_tunnel(
         )
     })?;
 
-    // If the tunnel is currently online, disconnect it immediately
     {
         let mut active = state.active_tunnels.write().await;
         if let Some(conn) = active.remove(&params.id) {
@@ -147,21 +144,21 @@ pub async fn delete_tunnel(
 #[derive(Deserialize)]
 pub struct EnrollPayload {
     pub token: String,
-    pub csr: String, // PEM-encoded CSR
+    pub csr: String,
 }
 
 #[derive(Serialize)]
 pub struct EnrollResponse {
-    pub certificate: String,    // PEM-encoded client certificate
-    pub ca_certificate: String, // PEM-encoded CA certificate
+    pub certificate: String,
+    pub ca_certificate: String,
 }
 
-// POST /api/tunnels/enroll
+
 pub async fn enroll_tunnel(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<EnrollPayload>,
 ) -> Result<Json<EnrollResponse>, (StatusCode, String)> {
-    // 1. Verify token in Database
+    
     let db_tunnel = state
         .db
         .get_tunnel_by_token(&payload.token)
@@ -178,12 +175,9 @@ pub async fn enroll_tunnel(
             )
         })?;
 
-    // 2. Parse CSR PEM using rcgen
     let csr_params = rcgen::CertificateSigningRequestParams::from_pem(&payload.csr)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid CSR PEM: {:?}", e)))?;
 
-    // 3. Sign the certificate using our CA
-    // Under rcgen 0.13, we build the client certificate from the CSR public key and subject, signed by our CA
     let mut params = rcgen::CertificateParams::new(vec![]).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -200,7 +194,6 @@ pub async fn enroll_tunnel(
     params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
     params.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
 
-    // Set certificate validity
     params.not_before = time::OffsetDateTime::now_utc();
     params.not_after = time::OffsetDateTime::now_utc()
         .checked_add(time::Duration::days(365))
@@ -211,7 +204,6 @@ pub async fn enroll_tunnel(
             )
         })?;
 
-    // Sign the client public key with our CA cert and key
     let cert = params
         .signed_by(&csr_params.public_key, &state.ca.cert, &state.ca.key_pair)
         .map_err(|e| {
@@ -223,7 +215,6 @@ pub async fn enroll_tunnel(
 
     let cert_pem = cert.pem();
 
-    // 4. Save the issued certificate to the database
     state
         .db
         .save_tunnel_cert(&db_tunnel.id, &cert_pem)
@@ -252,9 +243,9 @@ pub struct StatusResponse {
     pub listeners: Vec<ListenerInfo>,
 }
 
-// GET /api/status
+
 pub async fn get_status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
-    let mut listeners = vec![
+    let listeners = vec![
         ListenerInfo {
             name: "HTTP Web Proxy".to_string(),
             address: state.config.http_addr.clone(),
@@ -272,22 +263,9 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Json<StatusRespon
         },
         ListenerInfo {
             name: "QUIC Tunnel Server".to_string(),
-            address: "0.0.0.0:7700".to_string(),
+            address: state.config.tunnel_addr.clone(),
             status: "Active".to_string(),
         },
     ];
-
-    // Add active dynamic UDS route listeners
-    {
-        let active_listeners = state.active_route_listeners.lock().unwrap();
-        for host in active_listeners.iter() {
-            listeners.push(ListenerInfo {
-                name: format!("UDS Route Bridge ({})", host),
-                address: format!("tunnels/route-{}.sock", host),
-                status: "Active".to_string(),
-            });
-        }
-    }
-
     Json(StatusResponse { listeners })
 }
