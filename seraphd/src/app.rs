@@ -1,12 +1,16 @@
 use super::route::Route;
+use crate::control::AdminService;
 use crate::db::Database;
-use crate::{config::AppConfig, state::AppState, registry::{CertificateRegistry, RouteRegistry}};
-use std::sync::Arc;
+use crate::tunnel::listener::QuicTunnelService;
+use crate::web_proxy::create_proxy_service;
+use crate::{
+    config::AppConfig,
+    registry::{CertificateRegistry, RouteRegistry},
+    state::AppState,
+};
 use pingora::server::Server;
 use pingora::services::background::background_service;
-use crate::tunnel::listener::QuicTunnelService;
-use crate::control::AdminService;
-use crate::web_proxy::create_proxy_service;
+use std::sync::Arc;
 
 pub fn run() -> anyhow::Result<()> {
     let config_path = std::path::Path::new("config.toml");
@@ -54,17 +58,11 @@ pub fn run() -> anyhow::Result<()> {
     server.bootstrap();
 
     // Register QUIC Tunnel Service
-    let tunnel_service = background_service(
-        "quic_tunnel",
-        QuicTunnelService::new(state.clone())
-    );
+    let tunnel_service = background_service("quic_tunnel", QuicTunnelService::new(state.clone()));
     server.add_service(tunnel_service);
 
     // Register Admin/Control Service
-    let admin_service = background_service(
-        "admin_control",
-        AdminService::new(state.clone())
-    );
+    let admin_service = background_service("admin_control", AdminService::new(state.clone()));
     server.add_service(admin_service);
 
     // Register Web Proxy Service

@@ -1,5 +1,5 @@
-use rusqlite::params;
 use super::Database;
+use rusqlite::params;
 
 pub struct DbCert {
     pub sni: String,
@@ -11,7 +11,8 @@ pub struct DbCert {
 impl Database {
     pub fn load_certs(&self) -> anyhow::Result<Vec<DbCert>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT sni, cert_pem, key_pem, acme_email FROM certificates")?;
+        let mut stmt =
+            conn.prepare("SELECT sni, cert_pem, key_pem, acme_email FROM certificates")?;
         let cert_iter = stmt.query_map([], |row| {
             let sni: String = row.get(0)?;
             let cert_pem: String = row.get(1)?;
@@ -32,7 +33,13 @@ impl Database {
         Ok(certs)
     }
 
-    pub fn save_cert(&self, sni: &str, cert_pem: &[u8], key_pem: &[u8], acme_email: Option<&str>) -> anyhow::Result<()> {
+    pub fn save_cert(
+        &self,
+        sni: &str,
+        cert_pem: &[u8],
+        key_pem: &[u8],
+        acme_email: Option<&str>,
+    ) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         let cert_str = std::str::from_utf8(cert_pem)?;
         let key_str = std::str::from_utf8(key_pem)?;
@@ -45,7 +52,8 @@ impl Database {
 
     pub fn load_acme_certs(&self) -> anyhow::Result<Vec<(String, String)>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT sni, acme_email FROM certificates WHERE acme_email IS NOT NULL")?;
+        let mut stmt =
+            conn.prepare("SELECT sni, acme_email FROM certificates WHERE acme_email IS NOT NULL")?;
         let rows = stmt.query_map([], |row| {
             let sni: String = row.get(0)?;
             let email: String = row.get(1)?;

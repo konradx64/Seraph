@@ -75,10 +75,7 @@ impl Database {
 
     pub fn delete_tunnel(&self, id: &str) -> anyhow::Result<bool> {
         let conn = self.conn.lock().unwrap();
-        let rows_affected = conn.execute(
-            "DELETE FROM tunnels WHERE id = ?1",
-            params![id],
-        )?;
+        let rows_affected = conn.execute("DELETE FROM tunnels WHERE id = ?1", params![id])?;
         Ok(rows_affected > 0)
     }
 

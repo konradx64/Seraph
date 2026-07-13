@@ -1,6 +1,6 @@
-use rusqlite::params;
-use crate::route::{Route, TlsMode};
 use super::Database;
+use crate::route::{Route, TlsMode};
+use rusqlite::params;
 
 impl Database {
     pub fn load_routes(&self) -> anyhow::Result<Vec<Route>> {
@@ -42,9 +42,15 @@ impl Database {
 
         // Enforce absolute uniqueness on hostname and path_prefix
         if route.path_prefix.is_none() {
-            let _ = conn.execute("DELETE FROM routes WHERE hostname = ?1 AND path_prefix IS NULL", params![route.hostname]);
+            let _ = conn.execute(
+                "DELETE FROM routes WHERE hostname = ?1 AND path_prefix IS NULL",
+                params![route.hostname],
+            );
         } else {
-            let _ = conn.execute("DELETE FROM routes WHERE hostname = ?1 AND path_prefix = ?2", params![route.hostname, route.path_prefix]);
+            let _ = conn.execute(
+                "DELETE FROM routes WHERE hostname = ?1 AND path_prefix = ?2",
+                params![route.hostname, route.path_prefix],
+            );
         }
 
         let tls_json = serde_json::to_string(&route.tls)?;

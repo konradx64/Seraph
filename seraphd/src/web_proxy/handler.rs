@@ -150,14 +150,15 @@ impl ProxyHttp for WebProxyHandler {
         let routes = self.state.routes.load();
         let matched = routes.match_route(host, path);
 
-        if let Some(route) = &matched {
-            let is_tls = session.req_header().uri.scheme_str() == Some("https");
-            if route.tls == crate::route::TlsMode::Disabled && is_tls {
-                return Err(pingora::Error::explain(
-                    pingora::ErrorType::HTTPStatus(400),
-                    "HTTPS not supported for this host",
-                ));
-            }
+        let is_tls = session.req_header().uri.scheme_str() == Some("https");
+        if let Some(route) = &matched
+            && route.tls == crate::route::TlsMode::Disabled
+            && is_tls
+        {
+            return Err(pingora::Error::explain(
+                pingora::ErrorType::HTTPStatus(400),
+                "HTTPS not supported for this host",
+            ));
         }
 
         let mut peer = None;
@@ -238,21 +239,21 @@ impl ProxyHttp for WebProxyHandler {
     ) -> pingora::Result<()> {
         if let Some(host) = &ctx.matched_host {
             let routes = self.state.routes.load();
-            if let Some(route) = routes.match_route(host, "") {
-                if route.forward_ip {
-                    if let Some(client_addr) = session.client_addr() {
-                        let client_ip = match client_addr.as_inet() {
-                            Some(inet) => inet.ip().to_string(),
-                            None => client_addr.to_string(),
-                        };
-                        let _ = upstream_request.insert_header("X-Real-IP", &client_ip);
-                        let _ = upstream_request.insert_header("X-Forwarded-For", &client_ip);
-                    }
-
-                    let is_tls = session.req_header().uri.scheme_str() == Some("https");
-                    let proto = if is_tls { "https" } else { "http" };
-                    let _ = upstream_request.insert_header("X-Forwarded-Proto", proto);
+            if let Some(route) = routes.match_route(host, "")
+                && route.forward_ip
+            {
+                if let Some(client_addr) = session.client_addr() {
+                    let client_ip = match client_addr.as_inet() {
+                        Some(inet) => inet.ip().to_string(),
+                        None => client_addr.to_string(),
+                    };
+                    let _ = upstream_request.insert_header("X-Real-IP", &client_ip);
+                    let _ = upstream_request.insert_header("X-Forwarded-For", &client_ip);
                 }
+
+                let is_tls = session.req_header().uri.scheme_str() == Some("https");
+                let proto = if is_tls { "https" } else { "http" };
+                let _ = upstream_request.insert_header("X-Forwarded-Proto", proto);
             }
         }
         Ok(())
@@ -274,19 +275,18 @@ impl ProxyHttp for WebProxyHandler {
                     );
                 }
 
-                if let Some(origins) = &route.cors_origins {
-                    if !origins.is_empty() {
-                        let _ =
-                            upstream_response.insert_header("Access-Control-Allow-Origin", origins);
-                        let _ = upstream_response.insert_header(
-                            "Access-Control-Allow-Methods",
-                            "GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH",
-                        );
-                        let _ = upstream_response.insert_header(
-                            "Access-Control-Allow-Headers",
-                            "Content-Type, Authorization, X-Requested-With",
-                        );
-                    }
+                if let Some(origins) = &route.cors_origins
+                    && !origins.is_empty()
+                {
+                    let _ = upstream_response.insert_header("Access-Control-Allow-Origin", origins);
+                    let _ = upstream_response.insert_header(
+                        "Access-Control-Allow-Methods",
+                        "GET, POST, PUT, DELETE, OPTIONS, HEAD, PATCH",
+                    );
+                    let _ = upstream_response.insert_header(
+                        "Access-Control-Allow-Headers",
+                        "Content-Type, Authorization, X-Requested-With",
+                    );
                 }
             }
         }

@@ -29,7 +29,7 @@ pub fn clean_upstream(upstream: &str) -> String {
         .next()
         .unwrap_or(upstream)
         .to_string()
-    }
+}
 
 impl Route {
     pub fn new(hostname: impl Into<String>, upstream: impl Into<String>) -> Self {

@@ -110,7 +110,8 @@ pub async fn create_tunnel(
 
     let now = Utc::now();
     let created_at = now.to_rfc3339();
-    let enrollment_expires_at = (now + Duration::minutes(ENROLLMENT_TOKEN_TTL_MINUTES)).to_rfc3339();
+    let enrollment_expires_at =
+        (now + Duration::minutes(ENROLLMENT_TOKEN_TTL_MINUTES)).to_rfc3339();
 
     state
         .db

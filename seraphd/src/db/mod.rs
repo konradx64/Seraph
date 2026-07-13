@@ -2,8 +2,8 @@ use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
 
-mod routes;
 mod certs;
+mod routes;
 mod tunnels;
 
 pub struct Database {
@@ -20,7 +20,9 @@ impl Database {
 
         let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        let db = Self { conn: Mutex::new(conn) };
+        let db = Self {
+            conn: Mutex::new(conn),
+        };
         db.init_schema()?;
         Ok(db)
     }
@@ -39,10 +41,16 @@ impl Database {
             [],
         )?;
         // Migration: Add upstream_tls if it doesn't exist
-        let _ = conn.execute("ALTER TABLE routes ADD COLUMN upstream_tls INTEGER DEFAULT 0", []);
+        let _ = conn.execute(
+            "ALTER TABLE routes ADD COLUMN upstream_tls INTEGER DEFAULT 0",
+            [],
+        );
         let _ = conn.execute("ALTER TABLE routes ADD COLUMN hsts INTEGER DEFAULT 0", []);
         let _ = conn.execute("ALTER TABLE routes ADD COLUMN cors_origins TEXT", []);
-        let _ = conn.execute("ALTER TABLE routes ADD COLUMN forward_ip INTEGER DEFAULT 1", []);
+        let _ = conn.execute(
+            "ALTER TABLE routes ADD COLUMN forward_ip INTEGER DEFAULT 1",
+            [],
+        );
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS certificates (

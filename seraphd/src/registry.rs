@@ -1,9 +1,9 @@
 use crate::route::Route;
-use openssl::x509::X509;
 use openssl::pkey::{PKey, Private};
+use openssl::x509::X509;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::fmt;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct CertPair {
@@ -43,7 +43,8 @@ impl CertificateRegistry {
     pub fn register(&mut self, sni: &str, cert_pem: &[u8], key_pem: &[u8]) -> anyhow::Result<()> {
         let cert = X509::from_pem(cert_pem)?;
         let key = PKey::private_key_from_pem(key_pem)?;
-        self.certs.insert(sni.to_string(), Arc::new(CertPair { cert, key }));
+        self.certs
+            .insert(sni.to_string(), Arc::new(CertPair { cert, key }));
         Ok(())
     }
 

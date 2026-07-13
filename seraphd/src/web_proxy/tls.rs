@@ -1,8 +1,8 @@
+use crate::state::AppState;
 use async_trait::async_trait;
 use pingora::listeners::TlsAccept;
-use pingora::tls::ssl::SslRef;
 use pingora::tls::ssl::NameType;
-use crate::state::AppState;
+use pingora::tls::ssl::SslRef;
 use std::sync::Arc;
 
 pub struct DynamicTlsAcceptor {
