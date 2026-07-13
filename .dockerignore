@@ -1,0 +1,42 @@
+# Build artifacts
+/target
+**/target
+
+# Dependencies
+**/node_modules
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Runtime data
+/data
+/agent-data
+/tunnels
+
+# Local config
+config.toml
+seraphd/config.toml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# CI
+.github

@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────
+# Stage 1: Build the Svelte Dashboard
+# ─────────────────────────────────────────────────
+FROM node:22-alpine AS dashboard
+
+WORKDIR /build/dashboard
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci --ignore-scripts
+COPY dashboard/ ./
+RUN npm run build
+
+# ─────────────────────────────────────────────────
+# Stage 2: Build seraphd (Rust)
+# ─────────────────────────────────────────────────
+FROM rust:1.87-bookworm AS builder
+
+WORKDIR /build
+
+# Copy workspace manifests first for better layer caching
+COPY Cargo.toml Cargo.lock ./
+COPY seraphd/Cargo.toml seraphd/Cargo.toml
+COPY seraph-agent/Cargo.toml seraph-agent/Cargo.toml
+
+# Create dummy source files so cargo can resolve the workspace and cache deps
+RUN mkdir -p seraphd/src seraph-agent/src \
+    && echo "fn main() {}" > seraphd/src/main.rs \
+    && echo "fn main() {}" > seraph-agent/src/main.rs \
+    && cargo build --release -p seraphd 2>/dev/null || true
+
+# Now copy the real source code
+COPY seraphd/ seraphd/
+COPY seraph-agent/ seraph-agent/
+
+# Copy pre-built dashboard assets (rust-embed expects them at ../dashboard/dist/)
+COPY --from=dashboard /build/dashboard/dist/ dashboard/dist/
+
+# Force rebuild with real sources
+RUN touch seraphd/src/main.rs && cargo build --release -p seraphd
+
+# ─────────────────────────────────────────────────
+# Stage 3: Minimal runtime image
+# ─────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-root user
+RUN groupadd -r seraph && useradd -r -g seraph -m seraph
+
+# Create data directory
+RUN mkdir -p /var/lib/seraph && chown seraph:seraph /var/lib/seraph
+
+COPY --from=builder /build/target/release/seraphd /usr/local/bin/seraphd
+
+WORKDIR /var/lib/seraph
+
+# Default config uses these ports:
+#   8080  - HTTP proxy
+#   8443  - HTTPS proxy
+#   9090  - Admin/Control API + Dashboard
+#   7700  - QUIC tunnel listener (UDP)
+EXPOSE 8080 8443 9090 7700/udp
+
+USER seraph
+ENTRYPOINT ["seraphd"]

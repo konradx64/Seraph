@@ -1,1 +1,17 @@
 /target
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Runtime data
+/data
+/agent-data
+
+# Local config (use env vars or CLI args in Docker)
+config.toml
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────
+# Stage 1: Build seraph-agent (Rust)
+# ─────────────────────────────────────────────────
+FROM rust:1.87-bookworm AS builder
+
+WORKDIR /build
+
+# Copy workspace manifests first for better layer caching
+COPY Cargo.toml Cargo.lock ./
+COPY seraphd/Cargo.toml seraphd/Cargo.toml
+COPY seraph-agent/Cargo.toml seraph-agent/Cargo.toml
+
+# Create dummy source files so cargo can resolve the workspace and cache deps
+RUN mkdir -p seraphd/src seraph-agent/src \
+    && echo "fn main() {}" > seraphd/src/main.rs \
+    && echo "fn main() {}" > seraph-agent/src/main.rs \
+    && cargo build --release -p seraph-agent 2>/dev/null || true
+
+# Now copy the real source code
+COPY seraphd/ seraphd/
+COPY seraph-agent/ seraph-agent/
+
+# Force rebuild with real sources
+RUN touch seraph-agent/src/main.rs && cargo build --release -p seraph-agent
+
+# ─────────────────────────────────────────────────
+# Stage 2: Minimal runtime image
+# ─────────────────────────────────────────────────
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-root user
+RUN groupadd -r seraph && useradd -r -g seraph -m seraph
+
+# Create data directory for identity files
+RUN mkdir -p /var/lib/seraph-agent && chown seraph:seraph /var/lib/seraph-agent
+
+COPY --from=builder /build/target/release/seraph-agent /usr/local/bin/seraph-agent
+
+WORKDIR /var/lib/seraph-agent
+
+USER seraph
+ENTRYPOINT ["seraph-agent", "--data-dir", "/var/lib/seraph-agent"]
