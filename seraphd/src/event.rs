@@ -1,6 +1,13 @@
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "type")]
 pub enum Event {
+    DashboardSnapshot {
+        routes: Vec<crate::route::Route>,
+        certs: Vec<String>,
+        tunnels: Vec<crate::control::tunnels::TunnelListItem>,
+        status: crate::control::tunnels::StatusResponse,
+        stats: crate::stats::StatsResponse,
+    },
     RequestHit {
         host: String,
         method: String,
@@ -14,18 +21,40 @@ pub enum Event {
     },
     RouteAdded {
         key: String,
+        routes: Vec<crate::route::Route>,
     },
     RouteDeleted {
         key: String,
+        routes: Vec<crate::route::Route>,
     },
     CertRegistered {
         sni: String,
+        certs: Vec<String>,
+    },
+    TunnelCreated {
+        id: String,
+        tunnels: Vec<crate::control::tunnels::TunnelListItem>,
+        status: crate::control::tunnels::StatusResponse,
+    },
+    TunnelDeleted {
+        id: String,
+        tunnels: Vec<crate::control::tunnels::TunnelListItem>,
+        status: crate::control::tunnels::StatusResponse,
+    },
+    TunnelEnrolled {
+        id: String,
+        tunnels: Vec<crate::control::tunnels::TunnelListItem>,
+        status: crate::control::tunnels::StatusResponse,
     },
     TunnelConnected {
         id: String,
+        tunnels: Vec<crate::control::tunnels::TunnelListItem>,
+        status: crate::control::tunnels::StatusResponse,
     },
     TunnelDisconnected {
         id: String,
+        tunnels: Vec<crate::control::tunnels::TunnelListItem>,
+        status: crate::control::tunnels::StatusResponse,
     },
     Log {
         time: String,
@@ -42,4 +71,3 @@ pub enum Event {
         tunnels: std::collections::HashMap<String, crate::stats::TunnelStatsSnapshot>,
     },
 }
-

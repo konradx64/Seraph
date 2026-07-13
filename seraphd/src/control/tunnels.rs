@@ -4,10 +4,14 @@ use axum::{
     extract::{Query, State},
     http::StatusCode,
 };
+use chrono::{DateTime, Duration, Utc};
+use openssl::sha::sha256;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-#[derive(Serialize)]
+const ENROLLMENT_TOKEN_TTL_MINUTES: i64 = 10;
+
+#[derive(Debug, Serialize, Clone)]
 pub struct TunnelListItem {
     pub id: String,
     pub token: Option<String>,
@@ -18,16 +22,11 @@ pub struct TunnelListItem {
     pub bytes_received: u64,
 }
 
-
-pub async fn get_tunnels(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<TunnelListItem>>, (StatusCode, String)> {
-    let tunnels = state.db.load_tunnels().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to load tunnels: {:?}", e),
-        )
-    })?;
+pub async fn tunnel_snapshot(state: &AppState) -> Result<Vec<TunnelListItem>, String> {
+    let tunnels = state
+        .db
+        .load_tunnels()
+        .map_err(|e| format!("Failed to load tunnels: {:?}", e))?;
 
     let active = state.active_tunnels.read().await;
 
@@ -56,7 +55,7 @@ pub async fn get_tunnels(
 
             TunnelListItem {
                 id: t.id,
-                token: Some(t.token),
+                token: None,
                 client_cert: t.client_cert,
                 created_at: t.created_at,
                 status,
@@ -66,7 +65,16 @@ pub async fn get_tunnels(
         })
         .collect();
 
-    Ok(Json(items))
+    Ok(items)
+}
+
+pub async fn get_tunnels(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<TunnelListItem>>, (StatusCode, String)> {
+    tunnel_snapshot(&state)
+        .await
+        .map(Json)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
 }
 
 #[derive(Deserialize)]
@@ -98,15 +106,29 @@ pub async fn create_tunnel(
         .take(32)
         .map(char::from)
         .collect();
+    let token_hash = hash_enrollment_token(&token);
 
-    let created_at = chrono::Utc::now().to_rfc3339();
+    let now = Utc::now();
+    let created_at = now.to_rfc3339();
+    let enrollment_expires_at = (now + Duration::minutes(ENROLLMENT_TOKEN_TTL_MINUTES)).to_rfc3339();
 
-    state.db.save_tunnel(id, &token, &created_at).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to save tunnel: {:?}", e),
-        )
-    })?;
+    state
+        .db
+        .save_tunnel(id, &token_hash, &created_at, &enrollment_expires_at)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Failed to save tunnel: {:?}", e),
+            )
+        })?;
+
+    if let Ok(tunnels) = tunnel_snapshot(&state).await {
+        let _ = state.events.send(crate::event::Event::TunnelCreated {
+            id: id.to_string(),
+            tunnels,
+            status: status_snapshot(&state),
+        });
+    }
 
     Ok(Json(CreateTunnelResponse {
         id: id.to_string(),
@@ -118,7 +140,6 @@ pub async fn create_tunnel(
 pub struct DeleteTunnelParams {
     pub id: String,
 }
-
 
 pub async fn delete_tunnel(
     State(state): State<Arc<AppState>>,
@@ -138,6 +159,16 @@ pub async fn delete_tunnel(
         }
     }
 
+    if deleted {
+        if let Ok(tunnels) = tunnel_snapshot(&state).await {
+            let _ = state.events.send(crate::event::Event::TunnelDeleted {
+                id: params.id.clone(),
+                tunnels,
+                status: status_snapshot(&state),
+            });
+        }
+    }
+
     Ok(Json(deleted))
 }
 
@@ -153,15 +184,14 @@ pub struct EnrollResponse {
     pub ca_certificate: String,
 }
 
-
 pub async fn enroll_tunnel(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<EnrollPayload>,
 ) -> Result<Json<EnrollResponse>, (StatusCode, String)> {
-    
+    let token_hash = hash_enrollment_token(&payload.token);
     let db_tunnel = state
         .db
-        .get_tunnel_by_token(&payload.token)
+        .get_tunnel_by_token_hash(&token_hash)
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -174,6 +204,32 @@ pub async fn enroll_tunnel(
                 "Invalid enrollment token".to_string(),
             )
         })?;
+
+    if db_tunnel.client_cert.is_some() || db_tunnel.enrollment_used_at.is_some() {
+        return Err((
+            StatusCode::CONFLICT,
+            "Tunnel is already enrolled. Rotate the enrollment key to enroll again.".to_string(),
+        ));
+    }
+
+    let expires_at = db_tunnel
+        .enrollment_expires_at
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+        .ok_or_else(|| {
+            (
+                StatusCode::UNAUTHORIZED,
+                "Enrollment token has no valid expiry and must be rotated.".to_string(),
+            )
+        })?;
+
+    if Utc::now() > expires_at {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "Enrollment token expired. Generate a new enrollment key.".to_string(),
+        ));
+    }
 
     let csr_params = rcgen::CertificateSigningRequestParams::from_pem(&payload.csr)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("Invalid CSR PEM: {:?}", e)))?;
@@ -214,10 +270,22 @@ pub async fn enroll_tunnel(
         })?;
 
     let cert_pem = cert.pem();
+    let cert_fingerprint = certificate_fingerprint(&cert_pem).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to fingerprint certificate: {:?}", e),
+        )
+    })?;
+    let enrollment_used_at = Utc::now().to_rfc3339();
 
-    state
+    let saved = state
         .db
-        .save_tunnel_cert(&db_tunnel.id, &cert_pem)
+        .save_tunnel_cert(
+            &db_tunnel.id,
+            &cert_pem,
+            &cert_fingerprint,
+            &enrollment_used_at,
+        )
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -225,26 +293,41 @@ pub async fn enroll_tunnel(
             )
         })?;
 
+    if !saved {
+        return Err((
+            StatusCode::CONFLICT,
+            "Tunnel was enrolled by another request. Generate a new enrollment key if needed."
+                .to_string(),
+        ));
+    }
+
+    if let Ok(tunnels) = tunnel_snapshot(&state).await {
+        let _ = state.events.send(crate::event::Event::TunnelEnrolled {
+            id: db_tunnel.id.clone(),
+            tunnels,
+            status: status_snapshot(&state),
+        });
+    }
+
     Ok(Json(EnrollResponse {
         certificate: cert_pem,
         ca_certificate: state.ca.cert_pem.clone(),
     }))
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct ListenerInfo {
     pub name: String,
     pub address: String,
     pub status: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct StatusResponse {
     pub listeners: Vec<ListenerInfo>,
 }
 
-
-pub async fn get_status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
+pub fn status_snapshot(state: &AppState) -> StatusResponse {
     let listeners = vec![
         ListenerInfo {
             name: "HTTP Web Proxy".to_string(),
@@ -267,5 +350,27 @@ pub async fn get_status(State(state): State<Arc<AppState>>) -> Json<StatusRespon
             status: "Active".to_string(),
         },
     ];
-    Json(StatusResponse { listeners })
+    StatusResponse { listeners }
+}
+
+pub async fn get_status(State(state): State<Arc<AppState>>) -> Json<StatusResponse> {
+    Json(status_snapshot(&state))
+}
+
+pub fn hash_enrollment_token(token: &str) -> String {
+    hex_encode(&sha256(token.as_bytes()))
+}
+
+fn certificate_fingerprint(cert_pem: &str) -> anyhow::Result<String> {
+    let cert = openssl::x509::X509::from_pem(cert_pem.as_bytes())?;
+    Ok(hex_encode(&sha256(&cert.to_der()?)))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        use std::fmt::Write;
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
 }

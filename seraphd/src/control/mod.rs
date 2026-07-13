@@ -1,18 +1,15 @@
 use crate::state::AppState;
-use axum::{
-    routing::get,
-    Router,
-};
+use async_trait::async_trait;
+use axum::{Router, routing::get};
+use pingora::services::background::BackgroundService;
 use std::sync::Arc;
 use tracing::info;
-use async_trait::async_trait;
-use pingora::services::background::BackgroundService;
 
+pub mod certs;
 pub mod dashboard;
 pub mod routes;
-pub mod certs;
-pub mod tunnels;
 pub mod sse;
+pub mod tunnels;
 
 pub struct AdminService {
     state: Arc<AppState>,
@@ -38,6 +35,7 @@ impl BackgroundService for AdminService {
             let mut last_requests = 0;
             loop {
                 interval.tick().await;
+                state_clone.stats.flush_events();
                 let snap = state_clone.stats.get_snapshot();
                 let rps = snap.total_requests.saturating_sub(last_requests);
                 last_requests = snap.total_requests;
@@ -62,17 +60,32 @@ impl BackgroundService for AdminService {
                     .post(routes::add_route)
                     .delete(routes::delete_route),
             )
-            .route("/api/certs", get(certs::get_certs).post(certs::register_cert))
-            .route("/api/certs/refresh", axum::routing::post(certs::refresh_cert))
-            .route("/api/certs/generate", axum::routing::post(certs::generate_cert))
-            .route("/api/certs/acme", axum::routing::post(certs::generate_acme_cert))
+            .route(
+                "/api/certs",
+                get(certs::get_certs).post(certs::register_cert),
+            )
+            .route(
+                "/api/certs/refresh",
+                axum::routing::post(certs::refresh_cert),
+            )
+            .route(
+                "/api/certs/generate",
+                axum::routing::post(certs::generate_cert),
+            )
+            .route(
+                "/api/certs/acme",
+                axum::routing::post(certs::generate_acme_cert),
+            )
             .route(
                 "/api/tunnels",
                 get(tunnels::get_tunnels)
                     .post(tunnels::create_tunnel)
                     .delete(tunnels::delete_tunnel),
             )
-            .route("/api/tunnels/enroll", axum::routing::post(tunnels::enroll_tunnel))
+            .route(
+                "/api/tunnels/enroll",
+                axum::routing::post(tunnels::enroll_tunnel),
+            )
             .route("/api/status", get(tunnels::get_status))
             .route("/api/events", get(sse::get_events))
             .fallback(dashboard::serve_asset)
@@ -81,7 +94,11 @@ impl BackgroundService for AdminService {
         let listener = match tokio::net::TcpListener::bind(&admin_addr).await {
             Ok(l) => l,
             Err(e) => {
-                tracing::error!("Failed to bind admin TCP listener on {}: {:?}", admin_addr, e);
+                tracing::error!(
+                    "Failed to bind admin TCP listener on {}: {:?}",
+                    admin_addr,
+                    e
+                );
                 return;
             }
         };

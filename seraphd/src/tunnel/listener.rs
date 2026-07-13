@@ -3,15 +3,15 @@
 //! Bootstraps a Quinn QUIC endpoint with mTLS authentication.
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
+use pingora::services::background::BackgroundService;
 use quinn::{Endpoint, Incoming, ServerConfig};
+use rustls::RootCertStore;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
-use rustls::RootCertStore;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use pingora::services::background::BackgroundService;
-use async_trait::async_trait;
 
 use super::ca::TunnelCa;
 
@@ -31,10 +31,18 @@ impl BackgroundService for QuicTunnelService {
         let tunnels_dir = std::path::PathBuf::from("tunnels");
         let _ = std::fs::create_dir_all(&tunnels_dir);
 
-        let tunnel_addr = self.state.config.tunnel_addr.parse::<SocketAddr>().unwrap_or_else(|e| {
-            tracing::warn!("Failed to parse config tunnel_addr: {:?}. Falling back to 0.0.0.0:7700", e);
-            "0.0.0.0:7700".parse().unwrap()
-        });
+        let tunnel_addr = self
+            .state
+            .config
+            .tunnel_addr
+            .parse::<SocketAddr>()
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    "Failed to parse config tunnel_addr: {:?}. Falling back to 0.0.0.0:7700",
+                    e
+                );
+                "0.0.0.0:7700".parse().unwrap()
+            });
 
         match TunnelListener::bind(tunnel_addr, &self.state.ca) {
             Ok(tunnel_listener) => {
@@ -60,11 +68,11 @@ pub struct TunnelListener {
 impl TunnelListener {
     /// Create a new QUIC endpoint and start listening.
     pub fn bind(addr: SocketAddr, ca: &TunnelCa) -> Result<Self> {
-        let server_config = build_server_config(ca)
-            .context("Failed to build QUIC server TLS config")?;
+        let server_config =
+            build_server_config(ca).context("Failed to build QUIC server TLS config")?;
 
-        let endpoint = Endpoint::server(server_config, addr)
-            .context("Failed to bind QUIC endpoint")?;
+        let endpoint =
+            Endpoint::server(server_config, addr).context("Failed to bind QUIC endpoint")?;
 
         tracing::info!("Tunnel QUIC listener bound on {}", addr);
         Ok(Self { endpoint })
@@ -83,7 +91,11 @@ impl TunnelListener {
 }
 
 // Accept and dispatch tunnel connections.
-async fn handle_connection(incoming: Incoming, _tunnels_dir: PathBuf, state: Arc<crate::state::AppState>) {
+async fn handle_connection(
+    incoming: Incoming,
+    _tunnels_dir: PathBuf,
+    state: Arc<crate::state::AppState>,
+) {
     let remote = incoming.remote_address();
 
     match incoming.await {
@@ -95,7 +107,13 @@ async fn handle_connection(incoming: Incoming, _tunnels_dir: PathBuf, state: Arc
                     let mut tunnels = state.active_tunnels.write().await;
                     tunnels.insert(agent_id.clone(), conn.clone());
                 }
-                let _ = state.events.send(crate::event::Event::TunnelConnected { id: agent_id.clone() });
+                if let Ok(tunnels) = crate::control::tunnels::tunnel_snapshot(&state).await {
+                    let _ = state.events.send(crate::event::Event::TunnelConnected {
+                        id: agent_id.clone(),
+                        tunnels,
+                        status: crate::control::tunnels::status_snapshot(&state),
+                    });
+                }
 
                 let _ = conn.closed().await;
 
@@ -103,11 +121,20 @@ async fn handle_connection(incoming: Incoming, _tunnels_dir: PathBuf, state: Arc
                     let mut tunnels = state.active_tunnels.write().await;
                     tunnels.remove(&agent_id);
                 }
-                let _ = state.events.send(crate::event::Event::TunnelDisconnected { id: agent_id.clone() });
+                if let Ok(tunnels) = crate::control::tunnels::tunnel_snapshot(&state).await {
+                    let _ = state.events.send(crate::event::Event::TunnelDisconnected {
+                        id: agent_id.clone(),
+                        tunnels,
+                        status: crate::control::tunnels::status_snapshot(&state),
+                    });
+                }
 
                 tracing::info!("Tunnel agent '{}' disconnected", agent_id);
             } else {
-                tracing::warn!("Rejecting connection from {}: could not extract agent ID", remote);
+                tracing::warn!(
+                    "Rejecting connection from {}: could not extract agent ID",
+                    remote
+                );
             }
         }
         Err(e) => {
@@ -132,7 +159,9 @@ fn extract_agent_id(conn: &quinn::Connection) -> Option<String> {
 fn build_server_config(ca: &TunnelCa) -> Result<ServerConfig> {
     let server_key = rcgen::KeyPair::generate()?;
     let mut server_cert_params = rcgen::CertificateParams::new(vec!["seraph-tunnel".to_string()])?;
-    server_cert_params.distinguished_name.push(rcgen::DnType::CommonName, "Seraph Tunnel Server");
+    server_cert_params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "Seraph Tunnel Server");
 
     let server_cert = server_cert_params.signed_by(&server_key, &ca.cert, &ca.key_pair)?;
     let server_cert_der: CertificateDer<'static> = CertificateDer::from(server_cert.der().to_vec());
@@ -141,7 +170,9 @@ fn build_server_config(ca: &TunnelCa) -> Result<ServerConfig> {
 
     let ca_cert_der = CertificateDer::from(ca.cert.der().to_vec());
     let mut root_store = RootCertStore::empty();
-    root_store.add(ca_cert_der).context("Failed to add CA cert to trust store")?;
+    root_store
+        .add(ca_cert_der)
+        .context("Failed to add CA cert to trust store")?;
 
     let client_verifier = WebPkiClientVerifier::builder(Arc::new(root_store))
         .build()
@@ -165,4 +196,3 @@ fn build_server_config(ca: &TunnelCa) -> Result<ServerConfig> {
 
     Ok(server_config)
 }
-

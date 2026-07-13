@@ -99,78 +99,35 @@
   let searchQuery = $state("");
   let eventSource = null;
 
-  async function fetchRoutes() {
-    try {
-      const res = await fetch("/api/routes");
-      if (res.ok) {
-        routes = await res.json();
-      }
-    } catch (err) {
-      console.error("Failed to fetch routes:", err);
-    }
-  }
-
-  async function fetchCerts() {
-    try {
-      const res = await fetch("/api/certs");
-      if (res.ok) {
-        certs = await res.json();
-      }
-    } catch (err) {
-      console.error("Failed to fetch certs:", err);
-    }
-  }
-
-  async function fetchTunnels() {
-    try {
-      const res = await fetch("/api/tunnels");
-      if (res.ok) {
-        const data = await res.json();
-        const now = Date.now();
-        const nextBandwidth = {};
-        for (const t of data) {
-          const prev = tunnelStatsHistory[t.id];
-          if (prev) {
-            const elapsed = (now - prev.time) / 1000;
-            if (elapsed > 0.2) {
-              const sent_diff = t.bytes_sent - prev.bytes_sent;
-              const recv_diff = t.bytes_received - prev.bytes_received;
-              nextBandwidth[t.id] = {
-                upload: Math.max(0, Math.round(sent_diff / elapsed)),
-                download: Math.max(0, Math.round(recv_diff / elapsed))
-              };
-            } else {
-              nextBandwidth[t.id] = tunnelBandwidth[t.id] || { upload: 0, download: 0 };
-            }
-          } else {
-            nextBandwidth[t.id] = { upload: 0, download: 0 };
-          }
-          tunnelStatsHistory[t.id] = {
-            bytes_sent: t.bytes_sent,
-            bytes_received: t.bytes_received,
-            time: now
+  function applyTunnelSnapshot(data) {
+    const now = Date.now();
+    const nextBandwidth = {};
+    for (const t of data) {
+      const prev = tunnelStatsHistory[t.id];
+      if (prev) {
+        const elapsed = (now - prev.time) / 1000;
+        if (elapsed > 0.2) {
+          const sent_diff = t.bytes_sent - prev.bytes_sent;
+          const recv_diff = t.bytes_received - prev.bytes_received;
+          nextBandwidth[t.id] = {
+            upload: Math.max(0, Math.round(sent_diff / elapsed)),
+            download: Math.max(0, Math.round(recv_diff / elapsed))
           };
+        } else {
+          nextBandwidth[t.id] = tunnelBandwidth[t.id] || { upload: 0, download: 0 };
         }
-        tunnelBandwidth = nextBandwidth;
-        tunnels = data;
+      } else {
+        nextBandwidth[t.id] = { upload: 0, download: 0 };
       }
-    } catch (err) {
-      console.error("Failed to fetch tunnels:", err);
+      tunnelStatsHistory[t.id] = {
+        bytes_sent: t.bytes_sent,
+        bytes_received: t.bytes_received,
+        time: now
+      };
     }
+    tunnelBandwidth = nextBandwidth;
+    tunnels = data;
   }
-
-  async function fetchGatewayStatus() {
-    try {
-      const res = await fetch("/api/status");
-      if (res.ok) {
-        gatewayStatus = await res.json();
-      }
-    } catch (err) {
-      console.error("Failed to fetch gateway status:", err);
-    }
-  }
-
-
 
   function connectSSE() {
     status = "Connecting...";
@@ -183,35 +140,60 @@
     eventSource.onopen = () => {
       status = "Connected";
       logs = [{ time: new Date().toLocaleTimeString(), text: "Event stream connected successfully." }, ...logs];
-      fetchRoutes();
-      fetchCerts();
-      fetchTunnels();
-      fetchGatewayStatus();
     };
     
     eventSource.onmessage = (event) => {
       const msg = JSON.parse(event.data);
       let logText = "";
       
-      if (msg.type === "RequestHit") {
+      if (msg.type === "DashboardSnapshot") {
+        routes = msg.routes || [];
+        certs = msg.certs || [];
+        gatewayStatus = msg.status || { listeners: [] };
+        applyTunnelSnapshot(msg.tunnels || []);
+        stats = {
+          total_requests: msg.stats?.total_requests || 0,
+          status_2xx: msg.stats?.status_2xx || 0,
+          status_3xx: msg.stats?.status_3xx || 0,
+          status_4xx: msg.stats?.status_4xx || 0,
+          status_5xx: msg.stats?.status_5xx || 0,
+          rps: 0,
+          routes: msg.stats?.routes || {}
+        };
+        return;
+      } else if (msg.type === "RequestHit") {
         logText = `Proxy Hit: ${msg.host} ${msg.method} ${msg.path} -> ${msg.upstream}`;
       } else if (msg.type === "RequestMiss") {
         logText = `Proxy 404: ${msg.host} ${msg.method} ${msg.path} (No route configured)`;
       } else if (msg.type === "RouteAdded") {
         logText = `Route registered for host ${msg.key}`;
-        fetchRoutes();
+        routes = msg.routes || routes;
       } else if (msg.type === "RouteDeleted") {
         logText = `Route for ${msg.key} deleted`;
-        fetchRoutes();
+        routes = msg.routes || routes;
       } else if (msg.type === "CertRegistered") {
         logText = `SSL Certificate stored for SNI: ${msg.sni}`;
-        fetchCerts();
+        certs = msg.certs || certs;
+      } else if (msg.type === "TunnelCreated") {
+        logText = `Tunnel created: ${msg.id}`;
+        gatewayStatus = msg.status || gatewayStatus;
+        applyTunnelSnapshot(msg.tunnels || tunnels);
+      } else if (msg.type === "TunnelDeleted") {
+        logText = `Tunnel deleted: ${msg.id}`;
+        gatewayStatus = msg.status || gatewayStatus;
+        applyTunnelSnapshot(msg.tunnels || tunnels);
+      } else if (msg.type === "TunnelEnrolled") {
+        logText = `Tunnel enrolled: ${msg.id}`;
+        gatewayStatus = msg.status || gatewayStatus;
+        applyTunnelSnapshot(msg.tunnels || tunnels);
       } else if (msg.type === "TunnelConnected") {
         logText = `QUIC Tunnel agent connected: ${msg.id}`;
-        fetchTunnels();
+        gatewayStatus = msg.status || gatewayStatus;
+        applyTunnelSnapshot(msg.tunnels || tunnels);
       } else if (msg.type === "TunnelDisconnected") {
         logText = `QUIC Tunnel agent disconnected: ${msg.id}`;
-        fetchTunnels();
+        gatewayStatus = msg.status || gatewayStatus;
+        applyTunnelSnapshot(msg.tunnels || tunnels);
       } else if (msg.type === "Log") {
         logText = msg.text;
       } else if (msg.type === "StatsUpdate") {
@@ -280,16 +262,7 @@
 
   onMount(() => {
     connectSSE();
-    fetchRoutes();
-    fetchCerts();
-    fetchTunnels();
-    fetchGatewayStatus();
-
-    const interval = setInterval(() => {
-      fetchTunnels();
-      fetchGatewayStatus();
-    }, 5000);
-    return () => clearInterval(interval);
+    return () => eventSource?.close();
   });
 
   function startCreateRoute() {
@@ -355,7 +328,6 @@
       alertSuccess = result.success;
       setTimeout(() => { alertMsg = null; }, 5000);
       if (res.ok && result.success) {
-        fetchRoutes();
         document.getElementById('add_route_modal').close();
       }
     } catch (err) {
@@ -379,7 +351,6 @@
       alertSuccess = result.success;
       setTimeout(() => { alertMsg = null; }, 5000);
       if (res.ok && result.success) {
-        fetchCerts();
         cAcmeDomain = "";
         cAcmeEmail = "";
         document.getElementById('add_cert_modal').close();
@@ -401,9 +372,6 @@
       alertMsg = result.message;
       alertSuccess = result.success;
       setTimeout(() => { alertMsg = null; }, 5000);
-      if (res.ok && result.success) {
-        fetchRoutes();
-      }
     } catch (err) {
       console.error("Failed to delete route:", err);
     }
@@ -428,7 +396,6 @@
       alertSuccess = result.success;
       setTimeout(() => { alertMsg = null; }, 5000);
       if (res.ok && result.success) {
-        fetchCerts();
         uSni = "";
         uCertPem = "";
         uKeyPem = "";
@@ -455,7 +422,6 @@
         generatedKey = result.token;
         generatedKeyTunnelId = result.id;
         tName = "";
-        fetchTunnels();
         document.getElementById('add_tunnel_modal').close();
         document.getElementById('tunnel_key_modal').showModal();
       } else {
@@ -482,7 +448,6 @@
         alertMsg = `Tunnel "${id}" deleted successfully.`;
         alertSuccess = true;
         setTimeout(() => { alertMsg = null; }, 5000);
-        fetchTunnels();
       } else {
         const errText = await res.text();
         alertMsg = "Failed to delete tunnel: " + errText;
@@ -526,7 +491,6 @@
       alertSuccess = result.success;
       setTimeout(() => { alertMsg = null; }, 5000);
       if (res.ok && result.success) {
-        fetchCerts();
         cDomain = "";
         document.getElementById('add_cert_modal').close();
       }
@@ -851,14 +815,8 @@
                           <span class="text-emerald-600 font-medium text-xs">Enrolled ✓</span>
                         {:else}
                           <div class="flex items-center gap-1.5">
-                            <span class="text-amber-600 font-bold text-xs">Pending:</span>
-                            <code class="text-xs bg-slate-100 px-1.5 py-0.5 rounded-md font-mono text-slate-600">{tunnel.token.slice(0, 10)}...</code>
-                            <button class="btn btn-ghost btn-xs text-[10px] px-1.5 py-0.5 rounded-md text-cyan-600 font-extrabold hover:bg-cyan-50 border border-slate-200/50"
-                              onclick={() => {
-                                generatedKey = tunnel.token;
-                                generatedKeyTunnelId = tunnel.id;
-                                document.getElementById('tunnel_key_modal').showModal();
-                              }}>Show Key</button>
+                            <span class="text-amber-600 font-bold text-xs">Pending enrollment</span>
+                            <span class="text-[10px] text-slate-400">Key shown once on creation</span>
                           </div>
                         {/if}
                       </td>
@@ -1285,7 +1243,7 @@
 
       <div class="space-y-4">
         <div class="bg-emerald-50 text-emerald-800 text-xs rounded-lg p-3 border border-emerald-100 leading-relaxed">
-          Tunnel <strong>{generatedKeyTunnelId}</strong> created successfully. Copy the enrollment key below to configure and authorize your remote agent.
+          Tunnel <strong>{generatedKeyTunnelId}</strong> created successfully. Copy this one-time enrollment key now; it expires in 10 minutes.
         </div>
 
         <div class="form-control">

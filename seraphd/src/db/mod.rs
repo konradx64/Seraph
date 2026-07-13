@@ -1,4 +1,5 @@
 use rusqlite::Connection;
+use std::path::Path;
 use std::sync::Mutex;
 
 mod routes;
@@ -11,6 +12,12 @@ pub struct Database {
 
 impl Database {
     pub fn open(path: &str) -> anyhow::Result<Self> {
+        if let Some(parent) = Path::new(path).parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)?;
+            }
+        }
+
         let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         let db = Self { conn: Mutex::new(conn) };
@@ -51,8 +58,11 @@ impl Database {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS tunnels (
                 id TEXT PRIMARY KEY,
-                token TEXT NOT NULL,
+                token_hash TEXT NOT NULL,
                 client_cert TEXT,
+                client_cert_fingerprint TEXT,
+                enrollment_expires_at TEXT NOT NULL,
+                enrollment_used_at TEXT,
                 created_at TEXT NOT NULL
             )",
             [],

@@ -3,7 +3,7 @@ use std::fs;
 use std::path::Path;
 
 fn default_database_path() -> String {
-    "seraph.db".to_string()
+    "data/seraph.db".to_string()
 }
 
 fn default_tunnel_addr() -> String {
@@ -27,7 +27,7 @@ impl Default for AppConfig {
             http_addr: "0.0.0.0:8080".to_string(),
             https_addr: "0.0.0.0:8443".to_string(),
             admin_addr: "127.0.0.1:9090".to_string(),
-            database_path: "seraph.db".to_string(),
+            database_path: default_database_path(),
             tunnel_addr: "0.0.0.0:7700".to_string(),
         }
     }
@@ -46,4 +46,3 @@ impl AppConfig {
         Ok(())
     }
 }
-

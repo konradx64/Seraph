@@ -33,8 +33,11 @@ pub struct AddRoutePayload {
 
 // GET /api/routes
 pub async fn get_routes(State(state): State<Arc<AppState>>) -> Json<Vec<Route>> {
-    let routes = state.routes.load().all().to_vec();
-    Json(routes)
+    Json(route_snapshot(&state))
+}
+
+pub fn route_snapshot(state: &AppState) -> Vec<Route> {
+    state.routes.load().all().to_vec()
 }
 
 // POST /api/routes
@@ -78,9 +81,12 @@ pub async fn add_route(
     match state.db.save_route(&new_route) {
         Ok(_) => match state.db.load_routes() {
             Ok(routes_list) => {
-                let registry = crate::registry::RouteRegistry::new(routes_list);
+                let registry = crate::registry::RouteRegistry::new(routes_list.clone());
                 state.routes.store(Arc::new(registry));
-                let _ = state.events.send(crate::event::Event::RouteAdded { key: route_key });
+                let _ = state.events.send(crate::event::Event::RouteAdded {
+                    key: route_key,
+                    routes: routes_list,
+                });
                 (
                     StatusCode::CREATED,
                     Json(CommandResponse {
@@ -123,9 +129,12 @@ pub async fn delete_route(
     match state.db.delete_route(&hostname, path_prefix.as_deref()) {
         Ok(true) => match state.db.load_routes() {
             Ok(routes_list) => {
-                let registry = crate::registry::RouteRegistry::new(routes_list);
+                let registry = crate::registry::RouteRegistry::new(routes_list.clone());
                 state.routes.store(Arc::new(registry));
-                let _ = state.events.send(crate::event::Event::RouteDeleted { key: route_key });
+                let _ = state.events.send(crate::event::Event::RouteDeleted {
+                    key: route_key,
+                    routes: routes_list,
+                });
                 (
                     StatusCode::OK,
                     Json(CommandResponse {

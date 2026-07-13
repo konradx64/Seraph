@@ -64,7 +64,7 @@ http_addr    = "0.0.0.0:8080"
 https_addr   = "0.0.0.0:8443"
 admin_addr   = "127.0.0.1:9090"
 tunnel_addr  = "0.0.0.0:7700"
-database_path = "seraph.db"
+database_path = "data/seraph.db"
 ```
 
 ## Architecture

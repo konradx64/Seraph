@@ -1,12 +1,8 @@
-use axum::{
-    extract::State,
-    http::StatusCode,
-    Json,
-};
+use super::routes::CommandResponse;
+use crate::state::AppState;
+use axum::{Json, extract::State, http::StatusCode};
 use serde::Deserialize;
 use std::sync::Arc;
-use crate::state::AppState;
-use super::routes::CommandResponse;
 
 #[derive(Deserialize)]
 pub struct RegisterCertPayload {
@@ -23,15 +19,21 @@ pub async fn register_cert(
     let cert_pem = payload.cert_pem;
     let key_pem = payload.key_pem;
 
-    match state.db.save_cert(&sni, cert_pem.as_bytes(), key_pem.as_bytes(), None) {
+    match state
+        .db
+        .save_cert(&sni, cert_pem.as_bytes(), key_pem.as_bytes(), None)
+    {
         Ok(_) => {
             let mut certs = (**state.certs.load()).clone();
             match certs.register(&sni, cert_pem.as_bytes(), key_pem.as_bytes()) {
                 Ok(_) => {
                     state.certs.store(Arc::new(certs));
-                    let _ = state.events.send(crate::event::Event::CertRegistered {
-                        sni: sni.clone(),
-                    });
+                    if let Ok(certs) = cert_snapshot(&state) {
+                        let _ = state.events.send(crate::event::Event::CertRegistered {
+                            sni: sni.clone(),
+                            certs,
+                        });
+                    }
                     (
                         StatusCode::CREATED,
                         Json(CommandResponse {
@@ -59,18 +61,23 @@ pub async fn register_cert(
     }
 }
 
-pub async fn get_certs(
-    State(state): State<Arc<AppState>>,
-) -> (StatusCode, Json<Vec<String>>) {
-    match state.db.load_certs() {
-        Ok(certs_list) => {
-            let snis: Vec<String> = certs_list.into_iter().map(|c| c.sni).collect();
-            (StatusCode::OK, Json(snis))
-        }
+pub async fn get_certs(State(state): State<Arc<AppState>>) -> (StatusCode, Json<Vec<String>>) {
+    match cert_snapshot(&state) {
+        Ok(snis) => (StatusCode::OK, Json(snis)),
         Err(e) => {
             tracing::error!("Failed to load certificates: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::new()))
         }
+    }
+}
+
+pub fn cert_snapshot(state: &AppState) -> anyhow::Result<Vec<String>> {
+    match state.db.load_certs() {
+        Ok(certs_list) => {
+            let snis: Vec<String> = certs_list.into_iter().map(|c| c.sni).collect();
+            Ok(snis)
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -109,7 +116,9 @@ pub async fn generate_cert(
     let result = (|| -> anyhow::Result<(String, String)> {
         let mut params = rcgen::CertificateParams::new(vec![sni.clone()])?;
         params.distinguished_name = rcgen::DistinguishedName::new();
-        params.distinguished_name.push(rcgen::DnType::CommonName, &sni);
+        params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, &sni);
         let key_pair = rcgen::KeyPair::generate()?;
         let cert = params.self_signed(&key_pair)?;
         Ok((cert.pem(), key_pair.serialize_pem()))
@@ -117,7 +126,10 @@ pub async fn generate_cert(
 
     match result {
         Ok((cert_pem, key_pem)) => {
-            if let Err(e) = state.db.save_cert(&sni, cert_pem.as_bytes(), key_pem.as_bytes(), None) {
+            if let Err(e) = state
+                .db
+                .save_cert(&sni, cert_pem.as_bytes(), key_pem.as_bytes(), None)
+            {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(CommandResponse {
@@ -138,9 +150,12 @@ pub async fn generate_cert(
                 );
             }
             state.certs.store(Arc::new(certs));
-            let _ = state.events.send(crate::event::Event::CertRegistered {
-                sni: sni.clone(),
-            });
+            if let Ok(certs) = cert_snapshot(&state) {
+                let _ = state.events.send(crate::event::Event::CertRegistered {
+                    sni: sni.clone(),
+                    certs,
+                });
+            }
 
             (
                 StatusCode::CREATED,
@@ -178,10 +193,15 @@ pub async fn generate_acme_cert(
     tokio::spawn(async move {
         let _ = state_clone.events.send(crate::event::Event::Log {
             time: chrono::Local::now().format("%H:%M:%S").to_string(),
-            text: format!("Requesting Let's Encrypt TLS certificate for domain: {} (email: {})", sni, email),
+            text: format!(
+                "Requesting Let's Encrypt TLS certificate for domain: {} (email: {})",
+                sni, email
+            ),
         });
 
-        if let Err(e) = crate::acme::trigger_refresh_with_email(state_clone.clone(), sni.clone(), email).await {
+        if let Err(e) =
+            crate::acme::trigger_refresh_with_email(state_clone.clone(), sni.clone(), email).await
+        {
             tracing::error!("ACME generation failed for {}: {:?}", sni, e);
         }
     });
@@ -190,7 +210,10 @@ pub async fn generate_acme_cert(
         StatusCode::ACCEPTED,
         Json(CommandResponse {
             success: true,
-            message: format!("Let's Encrypt TLS request initiated for {}. Check request logs for challenge status.", response_sni),
+            message: format!(
+                "Let's Encrypt TLS request initiated for {}. Check request logs for challenge status.",
+                response_sni
+            ),
         }),
     )
 }

@@ -1,7 +1,91 @@
-use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
-use std::sync::RwLock;
-use std::collections::HashMap;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, RwLock};
+use tokio::sync::mpsc;
+
+const STATS_EVENT_BUFFER: usize = 16_384;
+const MAX_FLUSH_EVENTS: usize = 65_536;
+
+#[derive(Debug)]
+enum StatsEvent {
+    Request {
+        status: u16,
+    },
+    RouteRequest {
+        host: String,
+        latency_ms: u64,
+        is_connection_failure: bool,
+    },
+    TunnelTraffic {
+        id: String,
+        sent: u64,
+        received: u64,
+    },
+}
+
+#[derive(Default)]
+struct PendingRouteStats {
+    total_requests: u64,
+    total_latency_ms: u64,
+    online: bool,
+}
+
+#[derive(Default)]
+struct PendingTunnelStats {
+    bytes_sent: u64,
+    bytes_received: u64,
+}
+
+#[derive(Default)]
+struct PendingStats {
+    total_requests: u64,
+    status_2xx: u64,
+    status_3xx: u64,
+    status_4xx: u64,
+    status_5xx: u64,
+    routes: HashMap<String, PendingRouteStats>,
+    tunnels: HashMap<String, PendingTunnelStats>,
+}
+
+impl PendingStats {
+    fn record(&mut self, event: StatsEvent) {
+        match event {
+            StatsEvent::Request { status } => {
+                self.total_requests += 1;
+
+                if (200..300).contains(&status) {
+                    self.status_2xx += 1;
+                } else if (300..400).contains(&status) {
+                    self.status_3xx += 1;
+                } else if (400..500).contains(&status) {
+                    self.status_4xx += 1;
+                } else if (500..600).contains(&status) {
+                    self.status_5xx += 1;
+                }
+            }
+            StatsEvent::RouteRequest {
+                host,
+                latency_ms,
+                is_connection_failure,
+            } => {
+                let stats = self.routes.entry(host).or_default();
+                stats.total_requests += 1;
+                stats.total_latency_ms += latency_ms;
+                stats.online = !is_connection_failure;
+            }
+            StatsEvent::TunnelTraffic { id, sent, received } => {
+                let stats = self.tunnels.entry(id).or_default();
+                stats.bytes_sent += sent;
+                stats.bytes_received += received;
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.total_requests == 0 && self.routes.is_empty() && self.tunnels.is_empty()
+    }
+}
 
 #[derive(Debug)]
 pub struct RouteStats {
@@ -21,7 +105,8 @@ impl RouteStats {
 
     pub fn record(&self, latency_ms: u64, is_connection_failure: bool) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
-        self.total_latency_ms.fetch_add(latency_ms, Ordering::Relaxed);
+        self.total_latency_ms
+            .fetch_add(latency_ms, Ordering::Relaxed);
         if is_connection_failure {
             self.online.store(false, Ordering::Relaxed);
         } else {
@@ -69,10 +154,15 @@ pub struct Stats {
     pub status_5xx: AtomicU64,
     pub route_stats: RwLock<HashMap<String, RouteStats>>,
     pub tunnel_stats: RwLock<HashMap<String, TunnelStats>>,
+    event_tx: mpsc::Sender<StatsEvent>,
+    event_rx: Mutex<mpsc::Receiver<StatsEvent>>,
+    dropped_events: AtomicU64,
 }
 
 impl Default for Stats {
     fn default() -> Self {
+        let (event_tx, event_rx) = mpsc::channel(STATS_EVENT_BUFFER);
+
         Self {
             total_requests: AtomicU64::new(0),
             status_2xx: AtomicU64::new(0),
@@ -81,22 +171,94 @@ impl Default for Stats {
             status_5xx: AtomicU64::new(0),
             route_stats: RwLock::new(HashMap::new()),
             tunnel_stats: RwLock::new(HashMap::new()),
+            event_tx,
+            event_rx: Mutex::new(event_rx),
+            dropped_events: AtomicU64::new(0),
         }
     }
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub struct StatsResponse {
     pub total_requests: u64,
     pub status_2xx: u64,
     pub status_3xx: u64,
     pub status_4xx: u64,
     pub status_5xx: u64,
+    pub dropped_events: u64,
     pub routes: HashMap<String, RouteStatsSnapshot>,
     pub tunnels: HashMap<String, TunnelStatsSnapshot>,
 }
 
 impl Stats {
+    fn emit(&self, event: StatsEvent) {
+        if self.event_tx.try_send(event).is_err() {
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    pub fn flush_events(&self) {
+        let mut pending = PendingStats::default();
+
+        {
+            let mut event_rx = self.event_rx.lock().unwrap();
+            for _ in 0..MAX_FLUSH_EVENTS {
+                match event_rx.try_recv() {
+                    Ok(event) => pending.record(event),
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => break,
+                }
+            }
+        }
+
+        if pending.is_empty() {
+            return;
+        }
+
+        self.total_requests
+            .fetch_add(pending.total_requests, Ordering::Relaxed);
+        self.status_2xx
+            .fetch_add(pending.status_2xx, Ordering::Relaxed);
+        self.status_3xx
+            .fetch_add(pending.status_3xx, Ordering::Relaxed);
+        self.status_4xx
+            .fetch_add(pending.status_4xx, Ordering::Relaxed);
+        self.status_5xx
+            .fetch_add(pending.status_5xx, Ordering::Relaxed);
+
+        if !pending.routes.is_empty() {
+            let mut guard = self.route_stats.write().unwrap();
+            for (host, pending_stats) in pending.routes {
+                let stats = guard
+                    .entry(host)
+                    .or_insert_with(|| RouteStats::new(pending_stats.online));
+                stats
+                    .total_requests
+                    .fetch_add(pending_stats.total_requests, Ordering::Relaxed);
+                stats
+                    .total_latency_ms
+                    .fetch_add(pending_stats.total_latency_ms, Ordering::Relaxed);
+                stats.online.store(pending_stats.online, Ordering::Relaxed);
+            }
+        }
+
+        if !pending.tunnels.is_empty() {
+            let mut guard = self.tunnel_stats.write().unwrap();
+            for (id, pending_stats) in pending.tunnels {
+                let stats = guard.entry(id).or_insert_with(|| TunnelStats {
+                    bytes_sent: AtomicU64::new(0),
+                    bytes_received: AtomicU64::new(0),
+                });
+                stats
+                    .bytes_sent
+                    .fetch_add(pending_stats.bytes_sent, Ordering::Relaxed);
+                stats
+                    .bytes_received
+                    .fetch_add(pending_stats.bytes_received, Ordering::Relaxed);
+            }
+        }
+    }
+
     pub fn get_snapshot(&self) -> StatsResponse {
         let mut routes_map = HashMap::new();
         {
@@ -109,10 +271,13 @@ impl Stats {
         {
             let guard = self.tunnel_stats.read().unwrap();
             for (id, tstats) in guard.iter() {
-                tunnels_map.insert(id.clone(), TunnelStatsSnapshot {
-                    bytes_sent: tstats.bytes_sent.load(Ordering::Relaxed),
-                    bytes_received: tstats.bytes_received.load(Ordering::Relaxed),
-                });
+                tunnels_map.insert(
+                    id.clone(),
+                    TunnelStatsSnapshot {
+                        bytes_sent: tstats.bytes_sent.load(Ordering::Relaxed),
+                        bytes_received: tstats.bytes_received.load(Ordering::Relaxed),
+                    },
+                );
             }
         }
 
@@ -122,57 +287,29 @@ impl Stats {
             status_3xx: self.status_3xx.load(Ordering::Relaxed),
             status_4xx: self.status_4xx.load(Ordering::Relaxed),
             status_5xx: self.status_5xx.load(Ordering::Relaxed),
+            dropped_events: self.dropped_events.load(Ordering::Relaxed),
             routes: routes_map,
             tunnels: tunnels_map,
         }
     }
 
     pub fn record_request(&self, status: u16) {
-        self.total_requests.fetch_add(1, Ordering::Relaxed);
-
-        if (200..300).contains(&status) {
-            self.status_2xx.fetch_add(1, Ordering::Relaxed);
-        } else if (300..400).contains(&status) {
-            self.status_3xx.fetch_add(1, Ordering::Relaxed);
-        } else if (400..500).contains(&status) {
-            self.status_4xx.fetch_add(1, Ordering::Relaxed);
-        } else if (500..600).contains(&status) {
-            self.status_5xx.fetch_add(1, Ordering::Relaxed);
-        }
+        self.emit(StatsEvent::Request { status });
     }
 
     pub fn record_route_request(&self, host: &str, latency_ms: u64, is_connection_failure: bool) {
-        {
-            let read_guard = self.route_stats.read().unwrap();
-            if let Some(rstats) = read_guard.get(host) {
-                rstats.record(latency_ms, is_connection_failure);
-                return;
-            }
-        }
-        {
-            let mut write_guard = self.route_stats.write().unwrap();
-            let rstats = RouteStats::new(!is_connection_failure);
-            rstats.record(latency_ms, is_connection_failure);
-            write_guard.insert(host.to_string(), rstats);
-        }
+        self.emit(StatsEvent::RouteRequest {
+            host: host.to_string(),
+            latency_ms,
+            is_connection_failure,
+        });
     }
 
     pub fn record_tunnel_traffic(&self, id: &str, sent: u64, received: u64) {
-        {
-            let read_guard = self.tunnel_stats.read().unwrap();
-            if let Some(tstats) = read_guard.get(id) {
-                tstats.bytes_sent.fetch_add(sent, Ordering::Relaxed);
-                tstats.bytes_received.fetch_add(received, Ordering::Relaxed);
-                return;
-            }
-        }
-        {
-            let mut write_guard = self.tunnel_stats.write().unwrap();
-            let tstats = TunnelStats {
-                bytes_sent: AtomicU64::new(sent),
-                bytes_received: AtomicU64::new(received),
-            };
-            write_guard.insert(id.to_string(), tstats);
-        }
+        self.emit(StatsEvent::TunnelTraffic {
+            id: id.to_string(),
+            sent,
+            received,
+        });
     }
 }
