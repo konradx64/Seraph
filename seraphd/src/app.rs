@@ -1,8 +1,12 @@
 use super::route::Route;
-use crate::web_proxy::WebProxyServer;
 use crate::db::Database;
 use crate::{config::AppConfig, state::AppState, registry::{CertificateRegistry, RouteRegistry}};
 use std::sync::Arc;
+use pingora::server::Server;
+use pingora::services::background::background_service;
+use crate::tunnel::listener::QuicTunnelService;
+use crate::control::AdminService;
+use crate::web_proxy::create_proxy_service;
 
 pub fn run() -> anyhow::Result<()> {
     let config_path = std::path::Path::new("config.toml");
@@ -46,16 +50,32 @@ pub fn run() -> anyhow::Result<()> {
 
     let state = Arc::new(AppState::new(config, db, routes, certs, ca));
 
+    let mut server = Server::new(None)?;
+    server.bootstrap();
+
+    // Register QUIC Tunnel Service
+    let tunnel_service = background_service(
+        "quic_tunnel",
+        QuicTunnelService::new(state.clone())
+    );
+    server.add_service(tunnel_service);
+
+    // Register Admin/Control Service
+    let admin_service = background_service(
+        "admin_control",
+        AdminService::new(state.clone())
+    );
+    server.add_service(admin_service);
+
+    // Register Web Proxy Service
+    let proxy_service = create_proxy_service(&server.configuration, state.clone())?;
+    server.add_service(proxy_service);
+
     tracing::info!("seraphd starting");
     tracing::info!("http listener: {}", state.config.http_addr);
     tracing::info!("https listener: {}", state.config.https_addr);
     tracing::info!("admin listener: {}", state.config.admin_addr);
+    tracing::info!("tunnel listener: {}", state.config.tunnel_addr);
 
-    crate::control::start(state.clone())?;
-
-    let web_proxy = WebProxyServer::new(state.clone());
-    web_proxy.run()?;
-
-    Ok(())
+    server.run_forever();
 }
-
