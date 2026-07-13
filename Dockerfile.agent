@@ -1,7 +1,9 @@
 # ─────────────────────────────────────────────────
 # Stage 1: Build seraph-agent (Rust)
 # ─────────────────────────────────────────────────
-FROM rust:1.87-bookworm AS builder
+FROM rust:1.88-alpine AS builder
+
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf perl make
 
 WORKDIR /build
 
@@ -24,16 +26,14 @@ COPY seraph-agent/ seraph-agent/
 RUN touch seraph-agent/src/main.rs && cargo build --release -p seraph-agent
 
 # ─────────────────────────────────────────────────
-# Stage 2: Minimal runtime image
+# Stage 2: Minimal Alpine runtime
 # ─────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM alpine:3.21
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ca-certificates libgcc
 
 # Create a non-root user
-RUN groupadd -r seraph && useradd -r -g seraph -m seraph
+RUN addgroup -S seraph && adduser -S -G seraph seraph
 
 # Create data directory for identity files
 RUN mkdir -p /var/lib/seraph-agent && chown seraph:seraph /var/lib/seraph-agent

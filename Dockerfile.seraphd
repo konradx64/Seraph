@@ -12,7 +12,9 @@ RUN npm run build
 # ─────────────────────────────────────────────────
 # Stage 2: Build seraphd (Rust)
 # ─────────────────────────────────────────────────
-FROM rust:1.87-bookworm AS builder
+FROM rust:1.88-alpine AS builder
+
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf perl make
 
 WORKDIR /build
 
@@ -38,16 +40,14 @@ COPY --from=dashboard /build/dashboard/dist/ dashboard/dist/
 RUN touch seraphd/src/main.rs && cargo build --release -p seraphd
 
 # ─────────────────────────────────────────────────
-# Stage 3: Minimal runtime image
+# Stage 3: Minimal Alpine runtime
 # ─────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM alpine:3.21
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libssl3 \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ca-certificates libssl3 libgcc
 
 # Create a non-root user
-RUN groupadd -r seraph && useradd -r -g seraph -m seraph
+RUN addgroup -S seraph && adduser -S -G seraph seraph
 
 # Create data directory
 RUN mkdir -p /var/lib/seraph && chown seraph:seraph /var/lib/seraph
