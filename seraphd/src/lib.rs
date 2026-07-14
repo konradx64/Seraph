@@ -1,5 +1,6 @@
 pub mod acme;
 pub mod app;
+pub mod cert_store;
 pub mod config;
 pub mod control;
 pub mod db;

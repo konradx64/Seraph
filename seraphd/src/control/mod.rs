@@ -1,10 +1,11 @@
 use crate::state::AppState;
 use async_trait::async_trait;
-use axum::{Router, routing::get};
+use axum::{Router, middleware, routing::get};
 use pingora::services::background::BackgroundService;
 use std::sync::Arc;
 use tracing::info;
 
+mod auth;
 pub mod certs;
 pub mod dashboard;
 pub mod routes;
@@ -26,13 +27,12 @@ impl BackgroundService for AdminService {
     async fn start(&self, mut shutdown: pingora::server::ShutdownWatch) {
         let admin_addr = self.state.config.admin_addr.clone();
 
-        tokio::spawn(crate::acme::start_acme_worker(self.state.clone()));
-
         // Spawn periodic stats streaming worker
         let state_clone = self.state.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-            let mut last_requests = 0;
+            let mut last_requests = state_clone.stats.get_snapshot().total_requests;
+            let mut ticks = 0_u8;
             loop {
                 interval.tick().await;
                 state_clone.stats.flush_events();
@@ -50,10 +50,19 @@ impl BackgroundService for AdminService {
                     routes: snap.routes,
                     tunnels: snap.tunnels,
                 });
+
+                ticks += 1;
+                if ticks == 10 {
+                    ticks = 0;
+                    let persisted = state_clone.stats.persisted_snapshot();
+                    if let Err(error) = state_clone.db.save_stats(&persisted) {
+                        tracing::error!("failed to persist statistics: {}", error);
+                    }
+                }
             }
         });
 
-        let app = Router::new()
+        let protected = Router::new()
             .route(
                 "/api/routes",
                 get(routes::get_routes)
@@ -82,13 +91,20 @@ impl BackgroundService for AdminService {
                     .post(tunnels::create_tunnel)
                     .delete(tunnels::delete_tunnel),
             )
+            .route("/api/status", get(tunnels::get_status))
+            .route("/api/events", get(sse::get_events))
+            .fallback(dashboard::serve_asset)
+            .layer(middleware::from_fn_with_state(
+                auth::AdminAuth::new(self.state.config.admin_key.clone()),
+                auth::require_admin_auth,
+            ));
+
+        let app = Router::new()
             .route(
                 "/api/tunnels/enroll",
                 axum::routing::post(tunnels::enroll_tunnel),
             )
-            .route("/api/status", get(tunnels::get_status))
-            .route("/api/events", get(sse::get_events))
-            .fallback(dashboard::serve_asset)
+            .merge(protected)
             .with_state(self.state.clone());
 
         let listener = match tokio::net::TcpListener::bind(&admin_addr).await {

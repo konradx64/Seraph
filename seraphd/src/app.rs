@@ -4,6 +4,7 @@ use crate::db::Database;
 use crate::tunnel::listener::QuicTunnelService;
 use crate::web_proxy::create_proxy_service;
 use crate::{
+    cert_store::CertificateStore,
     config::AppConfig,
     registry::{CertificateRegistry, RouteRegistry},
     state::AppState,
@@ -12,21 +13,16 @@ use pingora::server::Server;
 use pingora::services::background::background_service;
 use std::sync::Arc;
 
-pub fn run() -> anyhow::Result<()> {
-    let config_path = std::path::Path::new("config.toml");
-    let config = if config_path.exists() {
-        tracing::info!("loading config from {:?}", config_path);
-        AppConfig::load_from_file(config_path)?
-    } else {
-        tracing::info!("config.toml not found, generating default config");
-        let default_config = AppConfig::default();
-        default_config.save_to_file(config_path)?;
-        default_config
-    };
+pub fn run(config: AppConfig) -> anyhow::Result<()> {
+    let data_dir = std::path::Path::new(&config.data_dir);
+    std::fs::create_dir_all(data_dir)?;
+    let database_path = data_dir.join("seraph.db");
 
     // Initialize Database
-    tracing::info!("opening database at {}", config.database_path);
-    let db = Database::open(&config.database_path)?;
+    tracing::info!("opening database at {}", database_path.display());
+    let db = Database::open(&database_path.to_string_lossy())?;
+    let cert_store = CertificateStore::new(data_dir)?;
+    let stats = crate::stats::Stats::from_persisted(db.load_stats()?);
 
     // Load dynamic state from DB
     let mut routes_list = db.load_routes()?;
@@ -37,7 +33,7 @@ pub fn run() -> anyhow::Result<()> {
         routes_list.push(default_route);
     }
 
-    let certs_list = db.load_certs()?;
+    let certs_list = cert_store.load_all()?;
 
     // Populate registries
     let routes = RouteRegistry::new(routes_list);
@@ -49,10 +45,11 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     // Initialize Tunnel CA
-    let data_dir = std::path::Path::new("data");
     let ca = crate::tunnel::ca::TunnelCa::load_or_create(data_dir)?;
 
-    let state = Arc::new(AppState::new(config, db, routes, certs, ca));
+    let state = Arc::new(AppState::new(
+        config, db, cert_store, routes, certs, ca, stats,
+    ));
 
     let mut server = Server::new(None)?;
     server.bootstrap();

@@ -20,8 +20,8 @@ pub async fn register_cert(
     let key_pem = payload.key_pem;
 
     match state
-        .db
-        .save_cert(&sni, cert_pem.as_bytes(), key_pem.as_bytes(), None)
+        .cert_store
+        .save(&sni, cert_pem.as_bytes(), key_pem.as_bytes(), None)
     {
         Ok(_) => {
             let mut certs = (**state.certs.load()).clone();
@@ -55,7 +55,7 @@ pub async fn register_cert(
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(CommandResponse {
                 success: false,
-                message: format!("Failed to save certificate to database: {}", e),
+                message: format!("Failed to save certificate to disk: {}", e),
             }),
         ),
     }
@@ -72,7 +72,7 @@ pub async fn get_certs(State(state): State<Arc<AppState>>) -> (StatusCode, Json<
 }
 
 pub fn cert_snapshot(state: &AppState) -> anyhow::Result<Vec<String>> {
-    match state.db.load_certs() {
+    match state.cert_store.load_all() {
         Ok(certs_list) => {
             let snis: Vec<String> = certs_list.into_iter().map(|c| c.sni).collect();
             Ok(snis)
@@ -126,9 +126,10 @@ pub async fn generate_cert(
 
     match result {
         Ok((cert_pem, key_pem)) => {
-            if let Err(e) = state
-                .db
-                .save_cert(&sni, cert_pem.as_bytes(), key_pem.as_bytes(), None)
+            if let Err(e) =
+                state
+                    .cert_store
+                    .save(&sni, cert_pem.as_bytes(), key_pem.as_bytes(), None)
             {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,

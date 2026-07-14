@@ -3,30 +3,6 @@ use instant_acme::{Account, ChallengeType, Identifier, NewAccount, NewOrder, Ord
 use rcgen::{CertificateParams, DistinguishedName, DnType};
 use std::sync::Arc;
 
-pub async fn start_acme_worker(state: Arc<AppState>) {
-    // Check routes periodically every 24 hours
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(24 * 3600));
-    loop {
-        interval.tick().await;
-        tracing::info!("Running periodic ACME checks...");
-        match state.db.load_acme_certs() {
-            Ok(acme_certs) => {
-                for (domain, email) in acme_certs {
-                    let state_clone = state.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = run_acme_flow(&state_clone, &domain, Some(&email)).await {
-                            tracing::error!("ACME flow failed for {}: {:?}", domain, e);
-                        }
-                    });
-                }
-            }
-            Err(e) => {
-                tracing::error!("Failed to load ACME certs for periodic checks: {:?}", e);
-            }
-        }
-    }
-}
-
 pub async fn trigger_refresh(state: Arc<AppState>, domain: String) {
     tokio::spawn(async move {
         let _ = state.events.send(crate::event::Event::Log {
@@ -34,7 +10,7 @@ pub async fn trigger_refresh(state: Arc<AppState>, domain: String) {
             text: format!("Starting manual ACME refresh for domain: {}", domain),
         });
 
-        let email = state.db.load_certs().ok().and_then(|certs| {
+        let email = state.cert_store.load_all().ok().and_then(|certs| {
             certs
                 .into_iter()
                 .find(|c| c.sni == domain)
@@ -71,14 +47,14 @@ pub async fn trigger_refresh(state: Arc<AppState>, domain: String) {
 async fn run_acme_flow(state: &AppState, domain: &str, email: Option<&str>) -> anyhow::Result<()> {
     tracing::info!("Running ACME flow for domain: {}", domain);
 
-    // 1. Create ACME Account using Let's Encrypt Staging by default
+    // 1. Create an ACME account with Let's Encrypt production.
     let contact_email = match email {
         Some(e) => format!("mailto:{}", e),
         None => format!("mailto:admin@{}", domain),
     };
     let contact = vec![contact_email.as_str()];
 
-    let server_url = "https://acme-staging-v02.api.letsencrypt.org/directory";
+    let server_url = "https://acme-v02.api.letsencrypt.org/directory";
 
     let (account, _credentials) = Account::create(
         &NewAccount {
@@ -163,8 +139,8 @@ async fn run_acme_flow(state: &AppState, domain: &str, email: Option<&str>) -> a
 
     let private_key_pem = cert_key.serialize_pem();
 
-    // Save to SQLite certificates table
-    state.db.save_cert(
+    // Save certificate and key to the data directory
+    state.cert_store.save(
         domain,
         cert_chain_pem.as_bytes(),
         private_key_pem.as_bytes(),
@@ -172,7 +148,7 @@ async fn run_acme_flow(state: &AppState, domain: &str, email: Option<&str>) -> a
     )?;
 
     // Reload in-memory registry
-    let all_certs = state.db.load_certs()?;
+    let all_certs = state.cert_store.load_all()?;
     let mut registry = crate::registry::CertificateRegistry::new();
     for db_cert in all_certs {
         let _ = registry.register(&db_cert.sni, &db_cert.cert_pem, &db_cert.key_pem);

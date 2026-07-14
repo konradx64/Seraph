@@ -56,11 +56,15 @@ COPY --from=builder /build/target/release/seraphd /usr/local/bin/seraphd
 
 WORKDIR /var/lib/seraph
 
-# Default config uses these ports:
-#   8080  - HTTP proxy
-#   8443  - HTTPS proxy
-#   9090  - Admin/Control API + Dashboard
-#   7700  - QUIC tunnel listener (UDP)
+ENV SERAPHD_DATA_DIR=/var/lib/seraph \
+    SERAPHD_HTTP_ADDR=0.0.0.0:8080 \
+    SERAPHD_HTTPS_ADDR=0.0.0.0:8443 \
+    SERAPHD_HTTPS_REDIRECT_PORT=443 \
+    SERAPHD_ADMIN_ADDR=0.0.0.0:9090 \
+    SERAPHD_TUNNEL_ADDR=0.0.0.0:7700
+
+# SERAPHD_ADMIN_KEY is required at runtime and intentionally has no image default.
+
 EXPOSE 8080 8443 9090 7700/udp
 
 USER seraph

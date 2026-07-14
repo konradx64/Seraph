@@ -43,6 +43,13 @@ The admin dashboard is available at `http://127.0.0.1:9090`.
 docker run -d \
   -p 8080:8080 -p 8443:8443 -p 9090:9090 -p 7700:7700/udp \
   -v seraph-data:/var/lib/seraph \
+  -e SERAPHD_DATA_DIR=/var/lib/seraph \
+  -e SERAPHD_HTTP_ADDR=0.0.0.0:8080 \
+  -e SERAPHD_HTTPS_ADDR=0.0.0.0:8443 \
+  -e SERAPHD_HTTPS_REDIRECT_PORT=443 \
+  -e SERAPHD_ADMIN_ADDR=0.0.0.0:9090 \
+  -e SERAPHD_ADMIN_KEY='replace-with-a-long-random-password' \
+  -e SERAPHD_TUNNEL_ADDR=0.0.0.0:7700 \
   ghcr.io/konradx64/seraph-seraphd:latest
 
 # Agent (first run — enrollment)
@@ -57,15 +64,24 @@ docker run -d \
 
 ## Configuration
 
-`seraphd` looks for a `config.toml` in the working directory. If not found, a default one is generated automatically.
+`seraphd` is configured with command-line arguments. All arguments are optional and use the defaults shown below:
 
-```toml
-http_addr    = "0.0.0.0:8080"
-https_addr   = "0.0.0.0:8443"
-admin_addr   = "127.0.0.1:9090"
-tunnel_addr  = "0.0.0.0:7700"
-database_path = "data/seraph.db"
+```bash
+seraphd \
+  --http-addr 0.0.0.0:8080 \
+  --https-addr 0.0.0.0:8443 \
+  --https-redirect-port 443 \
+  --admin-addr 127.0.0.1:9090 \
+  --admin-key 'replace-with-a-long-random-password' \
+  --tunnel-addr 0.0.0.0:7700 \
+  --data-dir data
 ```
+
+Run `seraphd --help` for the complete command-line reference.
+
+The same settings can be supplied through `SERAPHD_DATA_DIR`, `SERAPHD_HTTP_ADDR`, `SERAPHD_HTTPS_ADDR`, `SERAPHD_HTTPS_REDIRECT_PORT`, `SERAPHD_ADMIN_ADDR`, `SERAPHD_ADMIN_KEY`, and `SERAPHD_TUNNEL_ADDR`. Command-line arguments take precedence over environment variables. The admin key is required; sign in to the dashboard with username `admin` and the configured key as the password.
+
+The data directory contains `seraph.db`, the tunnel CA files, and a `certs/` directory for TLS certificates and private keys.
 
 ## Architecture
 

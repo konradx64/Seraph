@@ -2,8 +2,8 @@ use rusqlite::Connection;
 use std::path::Path;
 use std::sync::Mutex;
 
-mod certs;
 mod routes;
+mod stats;
 mod tunnels;
 
 pub struct Database {
@@ -53,17 +53,6 @@ impl Database {
         );
 
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS certificates (
-                sni TEXT PRIMARY KEY,
-                cert_pem TEXT NOT NULL,
-                key_pem TEXT NOT NULL
-            )",
-            [],
-        )?;
-        // Migration: Add acme_email if it doesn't exist
-        let _ = conn.execute("ALTER TABLE certificates ADD COLUMN acme_email TEXT", []);
-
-        conn.execute(
             "CREATE TABLE IF NOT EXISTS tunnels (
                 id TEXT PRIMARY KEY,
                 token_hash TEXT NOT NULL,
@@ -72,6 +61,34 @@ impl Database {
                 enrollment_expires_at TEXT NOT NULL,
                 enrollment_used_at TEXT,
                 created_at TEXT NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS stats_global (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                total_requests INTEGER NOT NULL,
+                status_2xx INTEGER NOT NULL,
+                status_3xx INTEGER NOT NULL,
+                status_4xx INTEGER NOT NULL,
+                status_5xx INTEGER NOT NULL,
+                dropped_events INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS stats_routes (
+                hostname TEXT PRIMARY KEY,
+                total_requests INTEGER NOT NULL,
+                total_latency_ms INTEGER NOT NULL
+            )",
+            [],
+        )?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS stats_tunnels (
+                tunnel_id TEXT PRIMARY KEY,
+                bytes_sent INTEGER NOT NULL,
+                bytes_received INTEGER NOT NULL
             )",
             [],
         )?;

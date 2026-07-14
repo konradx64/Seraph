@@ -1,48 +1,33 @@
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::Path;
+use clap::Parser;
 
-fn default_database_path() -> String {
-    "data/seraph.db".to_string()
-}
-
-fn default_tunnel_addr() -> String {
-    "0.0.0.0:7700".to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Parser)]
+#[command(author, version, about = "Seraph reverse proxy and tunnel server")]
 pub struct AppConfig {
+    /// Address for the HTTP proxy listener
+    #[arg(long, env = "SERAPHD_HTTP_ADDR", default_value = "0.0.0.0:8080")]
     pub http_addr: String,
+
+    /// Address for the HTTPS proxy listener
+    #[arg(long, env = "SERAPHD_HTTPS_ADDR", default_value = "0.0.0.0:8443")]
     pub https_addr: String,
+
+    /// Public HTTPS port used in HTTP-to-HTTPS redirects
+    #[arg(long, env = "SERAPHD_HTTPS_REDIRECT_PORT", default_value_t = 443)]
+    pub https_redirect_port: u16,
+
+    /// Address for the admin API and dashboard listener
+    #[arg(long, env = "SERAPHD_ADMIN_ADDR", default_value = "127.0.0.1:9090")]
     pub admin_addr: String,
-    #[serde(default = "default_database_path")]
-    pub database_path: String,
-    #[serde(default = "default_tunnel_addr")]
+
+    /// Password for the admin dashboard and control API
+    #[arg(long, env = "SERAPHD_ADMIN_KEY", hide_env_values = true)]
+    pub admin_key: String,
+
+    /// Directory for the database, TLS certificates, and tunnel CA
+    #[arg(long, env = "SERAPHD_DATA_DIR", default_value = "data")]
+    pub data_dir: String,
+
+    /// Address for the QUIC tunnel listener
+    #[arg(long, env = "SERAPHD_TUNNEL_ADDR", default_value = "0.0.0.0:7700")]
     pub tunnel_addr: String,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            http_addr: "0.0.0.0:8080".to_string(),
-            https_addr: "0.0.0.0:8443".to_string(),
-            admin_addr: "127.0.0.1:9090".to_string(),
-            database_path: default_database_path(),
-            tunnel_addr: "0.0.0.0:7700".to_string(),
-        }
-    }
-}
-
-impl AppConfig {
-    pub fn load_from_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
-        let toml_str = fs::read_to_string(path)?;
-        let config: Self = toml::from_str(&toml_str)?;
-        Ok(config)
-    }
-
-    pub fn save_to_file(&self, path: impl AsRef<Path>) -> anyhow::Result<()> {
-        let toml_str = toml::to_string_pretty(self)?;
-        fs::write(path, toml_str)?;
-        Ok(())
-    }
 }

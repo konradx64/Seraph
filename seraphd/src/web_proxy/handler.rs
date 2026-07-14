@@ -102,7 +102,12 @@ impl ProxyHttp for WebProxyHandler {
                     .query()
                     .map(|q| format!("?{}", q))
                     .unwrap_or_default();
-                let location = format!("https://{}:8443{}{}", host, path, query);
+                let authority = if self.state.config.https_redirect_port == 443 {
+                    host.clone()
+                } else {
+                    format!("{}:{}", host, self.state.config.https_redirect_port)
+                };
+                let location = format!("https://{}{}{}", authority, path, query);
 
                 response.insert_header("Location", location).unwrap();
                 response.insert_header("Content-Length", "0").unwrap();

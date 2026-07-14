@@ -7,6 +7,30 @@ use tokio::sync::mpsc;
 const STATS_EVENT_BUFFER: usize = 16_384;
 const MAX_FLUSH_EVENTS: usize = 65_536;
 
+#[derive(Debug, Default)]
+pub struct PersistedStats {
+    pub total_requests: u64,
+    pub status_2xx: u64,
+    pub status_3xx: u64,
+    pub status_4xx: u64,
+    pub status_5xx: u64,
+    pub dropped_events: u64,
+    pub routes: HashMap<String, PersistedRouteStats>,
+    pub tunnels: HashMap<String, PersistedTunnelStats>,
+}
+
+#[derive(Debug)]
+pub struct PersistedRouteStats {
+    pub total_requests: u64,
+    pub total_latency_ms: u64,
+}
+
+#[derive(Debug)]
+pub struct PersistedTunnelStats {
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+}
+
 #[derive(Debug)]
 enum StatsEvent {
     Request {
@@ -191,6 +215,92 @@ pub struct StatsResponse {
 }
 
 impl Stats {
+    pub fn from_persisted(persisted: PersistedStats) -> Self {
+        let mut stats = Self::default();
+        stats.total_requests = AtomicU64::new(persisted.total_requests);
+        stats.status_2xx = AtomicU64::new(persisted.status_2xx);
+        stats.status_3xx = AtomicU64::new(persisted.status_3xx);
+        stats.status_4xx = AtomicU64::new(persisted.status_4xx);
+        stats.status_5xx = AtomicU64::new(persisted.status_5xx);
+        stats.dropped_events = AtomicU64::new(persisted.dropped_events);
+        stats.route_stats = RwLock::new(
+            persisted
+                .routes
+                .into_iter()
+                .map(|(host, route)| {
+                    (
+                        host,
+                        RouteStats {
+                            total_requests: AtomicU64::new(route.total_requests),
+                            total_latency_ms: AtomicU64::new(route.total_latency_ms),
+                            online: AtomicBool::new(false),
+                        },
+                    )
+                })
+                .collect(),
+        );
+        stats.tunnel_stats = RwLock::new(
+            persisted
+                .tunnels
+                .into_iter()
+                .map(|(id, tunnel)| {
+                    (
+                        id,
+                        TunnelStats {
+                            bytes_sent: AtomicU64::new(tunnel.bytes_sent),
+                            bytes_received: AtomicU64::new(tunnel.bytes_received),
+                        },
+                    )
+                })
+                .collect(),
+        );
+        stats
+    }
+
+    pub fn persisted_snapshot(&self) -> PersistedStats {
+        let routes = self
+            .route_stats
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(host, route)| {
+                (
+                    host.clone(),
+                    PersistedRouteStats {
+                        total_requests: route.total_requests.load(Ordering::Relaxed),
+                        total_latency_ms: route.total_latency_ms.load(Ordering::Relaxed),
+                    },
+                )
+            })
+            .collect();
+        let tunnels = self
+            .tunnel_stats
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(id, tunnel)| {
+                (
+                    id.clone(),
+                    PersistedTunnelStats {
+                        bytes_sent: tunnel.bytes_sent.load(Ordering::Relaxed),
+                        bytes_received: tunnel.bytes_received.load(Ordering::Relaxed),
+                    },
+                )
+            })
+            .collect();
+
+        PersistedStats {
+            total_requests: self.total_requests.load(Ordering::Relaxed),
+            status_2xx: self.status_2xx.load(Ordering::Relaxed),
+            status_3xx: self.status_3xx.load(Ordering::Relaxed),
+            status_4xx: self.status_4xx.load(Ordering::Relaxed),
+            status_5xx: self.status_5xx.load(Ordering::Relaxed),
+            dropped_events: self.dropped_events.load(Ordering::Relaxed),
+            routes,
+            tunnels,
+        }
+    }
+
     fn emit(&self, event: StatsEvent) {
         if self.event_tx.try_send(event).is_err() {
             self.dropped_events.fetch_add(1, Ordering::Relaxed);
