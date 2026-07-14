@@ -64,6 +64,68 @@ docker run -d \
 
 The admin dashboard is published on host loopback only. Access it locally on the server or through an SSH/VPN tunnel; HTTP Basic credentials must not be sent over an untrusted plain-HTTP connection.
 
+### Docker Compose
+
+The following example starts `seraphd` and an agent together. Save it as `compose.yaml`:
+
+```yaml
+services:
+  seraphd:
+    image: ghcr.io/konradx64/seraph-seraphd:latest
+    restart: unless-stopped
+    environment:
+      SERAPHD_DATA_DIR: /var/lib/seraph
+      SERAPHD_HTTP_ADDR: 0.0.0.0:8080
+      SERAPHD_HTTPS_ADDR: 0.0.0.0:8443
+      SERAPHD_HTTPS_REDIRECT_PORT: 443
+      SERAPHD_ADMIN_ADDR: 0.0.0.0:9090
+      SERAPHD_ADMIN_KEY: ${SERAPHD_ADMIN_KEY:?Set SERAPHD_ADMIN_KEY}
+      SERAPHD_TUNNEL_ADDR: 0.0.0.0:7700
+    ports:
+      - "80:8080"
+      - "443:8443"
+      - "127.0.0.1:9090:9090"
+      - "7700:7700/udp"
+    volumes:
+      - seraph-data:/var/lib/seraph
+
+  seraph-agent:
+    image: ghcr.io/konradx64/seraph-seraph-agent:latest
+    restart: unless-stopped
+    depends_on:
+      - seraphd
+    command:
+      - --server
+      - http://seraphd:9090
+      - --tunnel-addr
+      - seraphd:7700
+      - --key
+      - ${SERAPH_ENROLLMENT_KEY:-set-after-creating-a-tunnel}
+    volumes:
+      - agent-data:/var/lib/seraph-agent
+
+volumes:
+  seraph-data:
+  agent-data:
+```
+
+Start the daemon first:
+
+```bash
+SERAPHD_ADMIN_KEY='replace-with-a-long-random-password' \
+docker compose up -d seraphd
+```
+
+Open the dashboard, create a tunnel, copy its one-time enrollment key, and then start the agent:
+
+```bash
+SERAPHD_ADMIN_KEY='replace-with-a-long-random-password' \
+SERAPH_ENROLLMENT_KEY='paste-the-one-time-key' \
+docker compose up -d seraph-agent
+```
+
+The example uses Docker's internal network for enrollment and tunnel traffic. In a real deployment, agents commonly run on other machines; point `--server` at a protected control endpoint and `--tunnel-addr` at the server's reachable UDP address. If the GHCR packages are private, run `docker login ghcr.io` before starting the stack.
+
 ## Configuration
 
 `seraphd` is configured with command-line arguments. All arguments are optional and use the defaults shown below:
