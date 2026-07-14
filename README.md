@@ -41,7 +41,7 @@ The admin dashboard is available at `http://127.0.0.1:9090`.
 ```bash
 # Daemon
 docker run -d \
-  -p 8080:8080 -p 8443:8443 -p 9090:9090 -p 7700:7700/udp \
+  -p 80:8080 -p 443:8443 -p 127.0.0.1:9090:9090 -p 7700:7700/udp \
   -v seraph-data:/var/lib/seraph \
   -e SERAPHD_DATA_DIR=/var/lib/seraph \
   -e SERAPHD_HTTP_ADDR=0.0.0.0:8080 \
@@ -61,6 +61,8 @@ docker run -d \
 ```
 
 > After the first enrollment, the agent stores its identity in the volume and reconnects automatically on restart.
+
+The admin dashboard is published on host loopback only. Access it locally on the server or through an SSH/VPN tunnel; HTTP Basic credentials must not be sent over an untrusted plain-HTTP connection.
 
 ## Configuration
 

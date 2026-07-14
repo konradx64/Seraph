@@ -43,6 +43,8 @@ impl TunnelCa {
 
         if paths.exist() {
             tracing::info!("Loading existing tunnel CA from disk");
+            crate::secure_fs::restrict_private_file(&paths.key)
+                .context("Failed to secure tunnel CA key")?;
             let cert_pem =
                 std::fs::read_to_string(&paths.cert).context("Failed to read tunnel CA cert")?;
             let key_pem =
@@ -65,7 +67,8 @@ impl TunnelCa {
 
             std::fs::create_dir_all(data_dir).context("Failed to create data directory")?;
             std::fs::write(&paths.cert, &cert_pem).context("Failed to write tunnel CA cert")?;
-            std::fs::write(&paths.key, &key_pem).context("Failed to write tunnel CA key")?;
+            crate::secure_fs::write_private_file(&paths.key, &key_pem)
+                .context("Failed to write tunnel CA key")?;
 
             Ok(Self {
                 cert_pem,

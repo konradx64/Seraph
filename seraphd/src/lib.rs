@@ -7,6 +7,7 @@ pub mod db;
 pub mod event;
 pub mod registry;
 pub mod route;
+mod secure_fs;
 pub mod state;
 pub mod stats;
 pub mod tunnel;

@@ -129,7 +129,7 @@ async fn run_acme_flow(state: &AppState, domain: &str, email: Option<&str>) -> a
     let csr_der = csr.der();
 
     // Finalize order
-    order.finalize(&csr_der).await?;
+    order.finalize(csr_der).await?;
 
     // Download certificate
     let cert_chain_pem = order

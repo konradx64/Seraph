@@ -160,14 +160,12 @@ pub async fn delete_tunnel(
         }
     }
 
-    if deleted {
-        if let Ok(tunnels) = tunnel_snapshot(&state).await {
-            let _ = state.events.send(crate::event::Event::TunnelDeleted {
-                id: params.id.clone(),
-                tunnels,
-                status: status_snapshot(&state),
-            });
-        }
+    if deleted && let Ok(tunnels) = tunnel_snapshot(&state).await {
+        let _ = state.events.send(crate::event::Event::TunnelDeleted {
+            id: params.id.clone(),
+            tunnels,
+            status: status_snapshot(&state),
+        });
     }
 
     Ok(Json(deleted))

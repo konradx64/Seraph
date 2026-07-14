@@ -24,7 +24,8 @@ pub struct CertificateStore {
 impl CertificateStore {
     pub fn new(data_dir: &Path) -> Result<Self> {
         let root = data_dir.join("certs");
-        std::fs::create_dir_all(&root).context("failed to create TLS certificate directory")?;
+        crate::secure_fs::create_private_dir(&root)
+            .context("failed to create TLS certificate directory")?;
         Ok(Self { root })
     }
 
@@ -45,9 +46,9 @@ impl CertificateStore {
         acme_email: Option<&str>,
     ) -> Result<()> {
         let dir = self.entry_dir(sni);
-        std::fs::create_dir_all(&dir)?;
+        crate::secure_fs::create_private_dir(&dir)?;
         std::fs::write(dir.join("cert.pem"), cert_pem)?;
-        std::fs::write(dir.join("key.pem"), key_pem)?;
+        crate::secure_fs::write_private_file(&dir.join("key.pem"), key_pem)?;
         let metadata = Metadata {
             sni: sni.to_string(),
             acme_email: acme_email.map(str::to_string),
@@ -68,6 +69,7 @@ impl CertificateStore {
             }
             let metadata: Metadata =
                 serde_json::from_slice(&std::fs::read(dir.join("metadata.json"))?)?;
+            crate::secure_fs::restrict_private_file(&dir.join("key.pem"))?;
             certs.push(StoredCert {
                 sni: metadata.sni,
                 cert_pem: std::fs::read(dir.join("cert.pem"))?,

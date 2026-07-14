@@ -192,7 +192,7 @@ fn build_server_config(ca: &TunnelCa) -> Result<ServerConfig> {
         .context("Cannot get mutable transport config")?;
     transport.max_idle_timeout(Some(quinn::VarInt::from_u32(30_000).into()));
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(10)));
-    transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(2048).into());
+    transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(2048));
 
     Ok(server_config)
 }

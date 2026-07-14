@@ -216,45 +216,48 @@ pub struct StatsResponse {
 
 impl Stats {
     pub fn from_persisted(persisted: PersistedStats) -> Self {
-        let mut stats = Self::default();
-        stats.total_requests = AtomicU64::new(persisted.total_requests);
-        stats.status_2xx = AtomicU64::new(persisted.status_2xx);
-        stats.status_3xx = AtomicU64::new(persisted.status_3xx);
-        stats.status_4xx = AtomicU64::new(persisted.status_4xx);
-        stats.status_5xx = AtomicU64::new(persisted.status_5xx);
-        stats.dropped_events = AtomicU64::new(persisted.dropped_events);
-        stats.route_stats = RwLock::new(
-            persisted
-                .routes
-                .into_iter()
-                .map(|(host, route)| {
-                    (
-                        host,
-                        RouteStats {
-                            total_requests: AtomicU64::new(route.total_requests),
-                            total_latency_ms: AtomicU64::new(route.total_latency_ms),
-                            online: AtomicBool::new(false),
-                        },
-                    )
-                })
-                .collect(),
-        );
-        stats.tunnel_stats = RwLock::new(
-            persisted
-                .tunnels
-                .into_iter()
-                .map(|(id, tunnel)| {
-                    (
-                        id,
-                        TunnelStats {
-                            bytes_sent: AtomicU64::new(tunnel.bytes_sent),
-                            bytes_received: AtomicU64::new(tunnel.bytes_received),
-                        },
-                    )
-                })
-                .collect(),
-        );
-        stats
+        let (event_tx, event_rx) = mpsc::channel(STATS_EVENT_BUFFER);
+        Self {
+            total_requests: AtomicU64::new(persisted.total_requests),
+            status_2xx: AtomicU64::new(persisted.status_2xx),
+            status_3xx: AtomicU64::new(persisted.status_3xx),
+            status_4xx: AtomicU64::new(persisted.status_4xx),
+            status_5xx: AtomicU64::new(persisted.status_5xx),
+            route_stats: RwLock::new(
+                persisted
+                    .routes
+                    .into_iter()
+                    .map(|(host, route)| {
+                        (
+                            host,
+                            RouteStats {
+                                total_requests: AtomicU64::new(route.total_requests),
+                                total_latency_ms: AtomicU64::new(route.total_latency_ms),
+                                online: AtomicBool::new(false),
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+            tunnel_stats: RwLock::new(
+                persisted
+                    .tunnels
+                    .into_iter()
+                    .map(|(id, tunnel)| {
+                        (
+                            id,
+                            TunnelStats {
+                                bytes_sent: AtomicU64::new(tunnel.bytes_sent),
+                                bytes_received: AtomicU64::new(tunnel.bytes_received),
+                            },
+                        )
+                    })
+                    .collect(),
+            ),
+            event_tx,
+            event_rx: Mutex::new(event_rx),
+            dropped_events: AtomicU64::new(persisted.dropped_events),
+        }
     }
 
     pub fn persisted_snapshot(&self) -> PersistedStats {

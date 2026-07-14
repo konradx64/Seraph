@@ -99,6 +99,10 @@
   let searchQuery = $state("");
   let eventSource = null;
 
+  function routeKey(route) {
+    return `${route.hostname}${route.path_prefix || ""}`;
+  }
+
   function applyTunnelSnapshot(data) {
     const now = Date.now();
     const nextBandwidth = {};
@@ -281,8 +285,8 @@
 
   function startEditRoute(route) {
     isEditing = true;
-    originalHostKey = route.hostname;
-    rHost = route.hostname;
+    originalHostKey = routeKey(route);
+    rHost = routeKey(route);
     rUpstream = route.upstream;
     rUpstreamTls = route.upstream_tls ? "https" : "http";
     rTunnel = route.tunnel || "";
@@ -644,9 +648,9 @@
                   </tr>
                 </thead>
                 <tbody class="text-slate-700 text-sm">
-                  {#each routes as route (route.hostname)}
+                  {#each routes as route (routeKey(route))}
                     <tr class="border-slate-200 hover:bg-slate-50">
-                      <td class="font-mono font-bold text-slate-800">{route.hostname}</td>
+                      <td class="font-mono font-bold text-slate-800">{routeKey(route)}</td>
                       <td class="font-mono text-slate-500">
                         {route.upstream_tls ? 'https://' : 'http://'}{route.upstream}
                         {#if route.tunnel && route.tunnel !== 'true'}
@@ -702,7 +706,7 @@
                         <button class="btn btn-ghost btn-xs text-cyan-600 hover:bg-cyan-50 rounded-md p-1" onclick={() => startEditRoute(route)}>
                           <Edit class="w-4.5 h-4.5" />
                         </button>
-                        <button class="btn btn-ghost btn-xs text-rose-500 hover:bg-rose-50 rounded-md p-1" onclick={() => deleteRoute(route.hostname)}>
+                        <button class="btn btn-ghost btn-xs text-rose-500 hover:bg-rose-50 rounded-md p-1" onclick={() => deleteRoute(routeKey(route))}>
                           <Trash2 class="w-4.5 h-4.5" />
                         </button>
                       </td>
@@ -1267,7 +1271,7 @@
         <div class="border-t border-slate-100 pt-4">
           <span class="text-xs font-bold text-slate-700 block mb-1.5">How to start the agent:</span>
           <div class="bg-slate-900 rounded-lg p-3 text-slate-300 font-mono text-[10.5px] leading-relaxed relative group overflow-x-auto">
-            seraph-agent --server {window.location.hostname}:7700 --key {generatedKey}
+            seraph-agent --server {window.location.origin} --tunnel-addr {window.location.hostname}:7700 --key {generatedKey}
           </div>
         </div>
       </div>
