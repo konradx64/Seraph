@@ -14,29 +14,33 @@ RUN npm run build
 # ─────────────────────────────────────────────────
 FROM rust:1.88-alpine AS builder
 
-RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf perl make
+RUN apk add --no-cache \
+    cmake \
+    g++ \
+    make \
+    musl-dev \
+    openssl-dev \
+    openssl-libs-static \
+    perl \
+    pkgconf
 
 WORKDIR /build
 
-# Copy workspace manifests first for better layer caching
+# Copy workspace manifests first for better layer caching.
 COPY Cargo.toml Cargo.lock ./
 COPY seraphd/Cargo.toml seraphd/Cargo.toml
 COPY seraph-agent/Cargo.toml seraph-agent/Cargo.toml
 
-# Create dummy source files so cargo can resolve the workspace and cache deps
+# Build dependencies with dummy binaries so this layer can be cached.
 RUN mkdir -p seraphd/src seraph-agent/src \
     && echo "fn main() {}" > seraphd/src/main.rs \
     && echo "fn main() {}" > seraph-agent/src/main.rs \
     && cargo build --release -p seraphd
 
-# Now copy the real source code
 COPY seraphd/ seraphd/
 COPY seraph-agent/ seraph-agent/
-
-# Copy pre-built dashboard assets (rust-embed expects them at ../dashboard/dist/)
 COPY --from=dashboard /build/dashboard/dist/ dashboard/dist/
 
-# Force rebuild with real sources
 RUN touch seraphd/src/main.rs && cargo build --release -p seraphd
 
 # ─────────────────────────────────────────────────
@@ -46,11 +50,10 @@ FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates libssl3 libgcc
 
-# Create a non-root user
-RUN addgroup -S seraph && adduser -S -G seraph seraph
-
-# Create data directory
-RUN mkdir -p /var/lib/seraph && chown seraph:seraph /var/lib/seraph
+RUN addgroup -S seraph \
+    && adduser -S -G seraph seraph \
+    && mkdir -p /var/lib/seraph \
+    && chown seraph:seraph /var/lib/seraph
 
 COPY --from=builder /build/target/release/seraphd /usr/local/bin/seraphd
 
@@ -64,7 +67,6 @@ ENV SERAPHD_DATA_DIR=/var/lib/seraph \
     SERAPHD_TUNNEL_ADDR=0.0.0.0:7700
 
 # SERAPHD_ADMIN_KEY is required at runtime and intentionally has no image default.
-
 EXPOSE 8080 8443 9090 7700/udp
 
 USER seraph

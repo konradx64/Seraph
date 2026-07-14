@@ -3,26 +3,31 @@
 # ─────────────────────────────────────────────────
 FROM rust:1.88-alpine AS builder
 
-RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconf perl make
+RUN apk add --no-cache \
+    cmake \
+    g++ \
+    make \
+    musl-dev \
+    openssl-dev \
+    openssl-libs-static \
+    perl \
+    pkgconf
 
 WORKDIR /build
 
-# Copy workspace manifests first for better layer caching
 COPY Cargo.toml Cargo.lock ./
 COPY seraphd/Cargo.toml seraphd/Cargo.toml
 COPY seraph-agent/Cargo.toml seraph-agent/Cargo.toml
 
-# Create dummy source files so cargo can resolve the workspace and cache deps
+# Build dependencies with dummy binaries so this layer can be cached.
 RUN mkdir -p seraphd/src seraph-agent/src \
     && echo "fn main() {}" > seraphd/src/main.rs \
     && echo "fn main() {}" > seraph-agent/src/main.rs \
     && cargo build --release -p seraph-agent
 
-# Now copy the real source code
 COPY seraphd/ seraphd/
 COPY seraph-agent/ seraph-agent/
 
-# Force rebuild with real sources
 RUN touch seraph-agent/src/main.rs && cargo build --release -p seraph-agent
 
 # ─────────────────────────────────────────────────
@@ -30,13 +35,12 @@ RUN touch seraph-agent/src/main.rs && cargo build --release -p seraph-agent
 # ─────────────────────────────────────────────────
 FROM alpine:3.21
 
-RUN apk add --no-cache ca-certificates libgcc
+RUN apk add --no-cache ca-certificates libssl3 libgcc
 
-# Create a non-root user
-RUN addgroup -S seraph && adduser -S -G seraph seraph
-
-# Create data directory for identity files
-RUN mkdir -p /var/lib/seraph-agent && chown seraph:seraph /var/lib/seraph-agent
+RUN addgroup -S seraph \
+    && adduser -S -G seraph seraph \
+    && mkdir -p /var/lib/seraph-agent \
+    && chown seraph:seraph /var/lib/seraph-agent
 
 COPY --from=builder /build/target/release/seraph-agent /usr/local/bin/seraph-agent
 
