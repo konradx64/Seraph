@@ -61,6 +61,10 @@ impl CertificateRegistry {
     pub fn get(&self, sni: &str) -> Option<Arc<CertPair>> {
         self.certs.get(sni).cloned()
     }
+
+    pub fn remove(&mut self, sni: &str) -> bool {
+        self.certs.remove(sni).is_some()
+    }
 }
 
 #[derive(Debug, Clone)]

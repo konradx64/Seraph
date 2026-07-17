@@ -178,6 +178,9 @@
       } else if (msg.type === "CertRegistered") {
         logText = `SSL Certificate stored for SNI: ${msg.sni}`;
         certs = msg.certs || certs;
+      } else if (msg.type === "CertDeleted") {
+        logText = `SSL Certificate deleted for SNI: ${msg.sni}`;
+        certs = msg.certs || certs;
       } else if (msg.type === "TunnelCreated") {
         logText = `Tunnel created: ${msg.id}`;
         gatewayStatus = msg.status || gatewayStatus;
@@ -482,6 +485,27 @@
     }
   }
 
+  async function deleteCert(sni) {
+    if (!confirm(`Are you sure you want to delete the TLS certificate for "${sni}"? HTTPS connections for this domain will stop working until another certificate is configured.`)) return;
+    try {
+      const res = await fetch(`/api/certs?sni=${encodeURIComponent(sni)}`, {
+        method: "DELETE"
+      });
+      const result = await res.json();
+      alertMsg = result.message;
+      alertSuccess = res.ok && result.success;
+      setTimeout(() => { alertMsg = null; }, 5000);
+      if (res.ok && result.success) {
+        certs = certs.filter(cert => cert !== sni);
+      }
+    } catch (err) {
+      console.error("Failed to delete certificate:", err);
+      alertMsg = "Failed to connect to gateway API";
+      alertSuccess = false;
+      setTimeout(() => { alertMsg = null; }, 5000);
+    }
+  }
+
   async function generateCert() {
     if (!cDomain) return;
     try {
@@ -743,7 +767,7 @@
                   <tr class="text-slate-400 border-slate-200 text-xs uppercase">
                     <th>Domain</th>
                     <th>Status</th>
-                    <th class="w-20 text-right"></th>
+                    <th class="w-32 text-right"></th>
                   </tr>
                 </thead>
                 <tbody class="text-slate-700 text-sm">
@@ -753,10 +777,13 @@
                       <td>
                         <span class="badge badge-xs p-1 text-emerald-700 bg-emerald-50 border-emerald-200/60 font-bold text-[10px]">Active</span>
                       </td>
-                      <td class="text-right">
+                      <td class="text-right flex gap-1 justify-end">
                         <button class="btn btn-ghost btn-xs text-cyan-600 hover:bg-cyan-50 font-black text-xs flex items-center gap-1.5 rounded-md px-2 py-1" onclick={() => refreshCert(cert)}>
                           <RefreshCw class="w-3.5 h-3.5" />
                           Renew
+                        </button>
+                        <button class="btn btn-ghost btn-xs text-rose-500 hover:bg-rose-50 rounded-md p-1" aria-label={`Delete certificate for ${cert}`} title="Delete certificate" onclick={() => deleteCert(cert)}>
+                          <Trash2 class="w-4 h-4" />
                         </button>
                       </td>
                     </tr>

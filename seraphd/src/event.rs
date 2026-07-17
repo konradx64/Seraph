@@ -31,6 +31,10 @@ pub enum Event {
         sni: String,
         certs: Vec<String>,
     },
+    CertDeleted {
+        sni: String,
+        certs: Vec<String>,
+    },
     TunnelCreated {
         id: String,
         tunnels: Vec<crate::control::tunnels::TunnelListItem>,
