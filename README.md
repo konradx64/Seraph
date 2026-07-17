@@ -50,12 +50,12 @@ docker run -d \
   -e SERAPHD_ADMIN_ADDR=0.0.0.0:9090 \
   -e SERAPHD_ADMIN_KEY='replace-with-a-long-random-password' \
   -e SERAPHD_TUNNEL_ADDR=0.0.0.0:7700 \
-  ghcr.io/konradx64/seraph-seraphd:latest
+  ghcr.io/konradx64/seraphd:latest
 
 # Agent (first run — enrollment)
 docker run -d \
   -v agent-data:/var/lib/seraph-agent \
-  ghcr.io/konradx64/seraph-seraph-agent:latest \
+  ghcr.io/konradx64/seraph-agent:latest \
   --server http://your-server:9090 \
   --key YOUR_ENROLLMENT_KEY
 ```
@@ -71,7 +71,7 @@ The following example starts `seraphd` and an agent together. Save it as `compos
 ```yaml
 services:
   seraphd:
-    image: ghcr.io/konradx64/seraph-seraphd:latest
+    image: ghcr.io/konradx64/seraphd:latest
     restart: unless-stopped
     environment:
       SERAPHD_DATA_DIR: /var/lib/seraph
@@ -90,7 +90,7 @@ services:
       - seraph-data:/var/lib/seraph
 
   seraph-agent:
-    image: ghcr.io/konradx64/seraph-seraph-agent:latest
+    image: ghcr.io/konradx64/seraph-agent:latest
     restart: unless-stopped
     depends_on:
       - seraphd
