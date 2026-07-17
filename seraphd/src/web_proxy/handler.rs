@@ -15,9 +15,18 @@ impl WebProxyHandler {
     }
 }
 
+fn downstream_is_tls(session: &Session) -> bool {
+    session
+        .as_downstream()
+        .digest()
+        .and_then(|digest| digest.ssl_digest.as_ref())
+        .is_some()
+}
+
 pub struct ReqContext {
     pub start_time: std::time::Instant,
     pub matched_host: Option<String>,
+    pub forward_ip: bool,
 }
 
 #[async_trait]
@@ -27,6 +36,7 @@ impl ProxyHttp for WebProxyHandler {
         ReqContext {
             start_time: std::time::Instant::now(),
             matched_host: None,
+            forward_ip: false,
         }
     }
 
@@ -85,8 +95,9 @@ impl ProxyHttp for WebProxyHandler {
 
         if let Some(route) = matched {
             ctx.matched_host = Some(route.hostname.clone());
+            ctx.forward_ip = route.forward_ip;
 
-            let is_tls = session.req_header().uri.scheme_str() == Some("https");
+            let is_tls = downstream_is_tls(session);
             if route.tls == crate::route::TlsMode::Enforced && !is_tls {
                 tracing::info!("Redirecting HTTP request to HTTPS for host: {}", host);
 
@@ -155,7 +166,7 @@ impl ProxyHttp for WebProxyHandler {
         let routes = self.state.routes.load();
         let matched = routes.match_route(host, path);
 
-        let is_tls = session.req_header().uri.scheme_str() == Some("https");
+        let is_tls = downstream_is_tls(session);
         if let Some(route) = &matched
             && route.tls == crate::route::TlsMode::Disabled
             && is_tls
@@ -169,6 +180,7 @@ impl ProxyHttp for WebProxyHandler {
         let mut peer = None;
         if let Some(route) = &matched {
             ctx.matched_host = Some(route.hostname.clone());
+            ctx.forward_ip = route.forward_ip;
             if let Some(tunnel_id) = &route.tunnel {
                 let tunnel_peer = TunnelPeer::new(
                     self.state.clone(),
@@ -243,23 +255,27 @@ impl ProxyHttp for WebProxyHandler {
         ctx: &mut Self::CTX,
     ) -> pingora::Result<()> {
         if let Some(host) = &ctx.matched_host {
-            let routes = self.state.routes.load();
-            if let Some(route) = routes.match_route(host, "")
-                && route.forward_ip
+            if ctx.forward_ip
+                && let Some(client_addr) = session.client_addr()
             {
-                if let Some(client_addr) = session.client_addr() {
-                    let client_ip = match client_addr.as_inet() {
-                        Some(inet) => inet.ip().to_string(),
-                        None => client_addr.to_string(),
-                    };
-                    let _ = upstream_request.insert_header("X-Real-IP", &client_ip);
-                    let _ = upstream_request.insert_header("X-Forwarded-For", &client_ip);
-                }
-
-                let is_tls = session.req_header().uri.scheme_str() == Some("https");
-                let proto = if is_tls { "https" } else { "http" };
-                let _ = upstream_request.insert_header("X-Forwarded-Proto", proto);
+                let client_ip = client_addr
+                    .as_inet()
+                    .map(|inet| inet.ip().to_string())
+                    .unwrap_or_else(|| client_addr.to_string());
+                let _ = upstream_request.insert_header("X-Real-IP", &client_ip);
+                let _ = upstream_request.insert_header("X-Forwarded-For", &client_ip);
             }
+
+            let is_tls = downstream_is_tls(session);
+            let proto = if is_tls { "https" } else { "http" };
+            let _ = upstream_request.insert_header("X-Forwarded-Proto", proto);
+            let _ = upstream_request.insert_header("X-Forwarded-Host", host);
+            let forwarded_port = if is_tls {
+                self.state.config.https_redirect_port
+            } else {
+                80
+            };
+            let _ = upstream_request.insert_header("X-Forwarded-Port", forwarded_port.to_string());
         }
         Ok(())
     }
