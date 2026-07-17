@@ -14,9 +14,12 @@ pub fn create_proxy_service(
 
     proxy_service.add_tcp(&state.config.http_addr);
 
-    let mut tls_settings =
+    let tls_settings =
         TlsSettings::with_callbacks(Box::new(DynamicTlsAcceptor::new(state.clone())))?;
-    tls_settings.enable_h2();
+    // Keep downstream traffic on HTTP/1.1 for now. Tunnel-backed upstreams are
+    // HTTP/1.1 streams, and multiplexing multiple stateful downstream requests
+    // over HTTP/2 can cause session responses to race (for example, Nextcloud
+    // repeatedly replacing its session cookie and redirecting back to login).
     proxy_service.add_tls_with_settings(&state.config.https_addr, None, tls_settings);
 
     Ok(proxy_service)
