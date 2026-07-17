@@ -15,6 +15,10 @@ pub struct AppConfig {
     #[arg(long, env = "SERAPHD_HTTPS_REDIRECT_PORT", default_value_t = 443)]
     pub https_redirect_port: u16,
 
+    /// Enable HTTP/2 on the public HTTPS listener
+    #[arg(long, env = "SERAPHD_HTTP2", default_value_t = false)]
+    pub http2: bool,
+
     /// Address for the admin API and dashboard listener
     #[arg(long, env = "SERAPHD_ADMIN_ADDR", default_value = "127.0.0.1:9090")]
     pub admin_addr: String,

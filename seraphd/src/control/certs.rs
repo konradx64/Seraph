@@ -1,6 +1,10 @@
 use super::routes::CommandResponse;
 use crate::state::AppState;
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::{Query, State},
+    http::StatusCode,
+};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -68,6 +72,54 @@ pub async fn get_certs(State(state): State<Arc<AppState>>) -> (StatusCode, Json<
             tracing::error!("Failed to load certificates: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, Json(Vec::new()))
         }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DeleteCertParams {
+    pub sni: String,
+}
+
+pub async fn delete_cert(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<DeleteCertParams>,
+) -> (StatusCode, Json<CommandResponse>) {
+    let sni = params.sni;
+    match state.cert_store.delete(&sni) {
+        Ok(true) => {
+            let mut certs = (**state.certs.load()).clone();
+            certs.remove(&sni);
+            state.certs.store(Arc::new(certs));
+
+            if let Ok(certs) = cert_snapshot(&state) {
+                let _ = state.events.send(crate::event::Event::CertDeleted {
+                    sni: sni.clone(),
+                    certs,
+                });
+            }
+
+            (
+                StatusCode::OK,
+                Json(CommandResponse {
+                    success: true,
+                    message: format!("Certificate deleted successfully for {}", sni),
+                }),
+            )
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(CommandResponse {
+                success: false,
+                message: format!("Certificate not found for {}", sni),
+            }),
+        ),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(CommandResponse {
+                success: false,
+                message: format!("Failed to delete certificate: {}", e),
+            }),
+        ),
     }
 }
 

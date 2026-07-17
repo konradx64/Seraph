@@ -16,7 +16,9 @@ pub fn create_proxy_service(
 
     let mut tls_settings =
         TlsSettings::with_callbacks(Box::new(DynamicTlsAcceptor::new(state.clone())))?;
-    tls_settings.enable_h2();
+    if state.config.http2 {
+        tls_settings.enable_h2();
+    }
     proxy_service.add_tls_with_settings(&state.config.https_addr, None, tls_settings);
 
     Ok(proxy_service)

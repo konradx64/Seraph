@@ -71,7 +71,9 @@ impl BackgroundService for AdminService {
             )
             .route(
                 "/api/certs",
-                get(certs::get_certs).post(certs::register_cert),
+                get(certs::get_certs)
+                    .post(certs::register_cert)
+                    .delete(certs::delete_cert),
             )
             .route(
                 "/api/certs/refresh",

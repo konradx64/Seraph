@@ -79,4 +79,14 @@ impl CertificateStore {
         }
         Ok(certs)
     }
+
+    pub fn delete(&self, sni: &str) -> Result<bool> {
+        let dir = self.entry_dir(sni);
+        if !dir.exists() {
+            return Ok(false);
+        }
+
+        std::fs::remove_dir_all(dir).context("failed to delete TLS certificate")?;
+        Ok(true)
+    }
 }
