@@ -32,6 +32,7 @@ rustls-pemfile = "2.2"
 rand = "0.8"
 x509-parser = "0.16"
 time = "0.3"
+maxminddb = "0.29.0"
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["http2", "rustls-tls"] }

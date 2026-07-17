@@ -50,6 +50,8 @@ docker run -d \
   -e SERAPHD_ADMIN_ADDR=0.0.0.0:9090 \
   -e SERAPHD_ADMIN_KEY='replace-with-a-long-random-password' \
   -e SERAPHD_TUNNEL_ADDR=0.0.0.0:7700 \
+  -e SERAPHD_GEOIP_DB=/var/lib/seraph/GeoLite2-City.mmdb \
+  -v /path/to/GeoLite2-City.mmdb:/var/lib/seraph/GeoLite2-City.mmdb:ro \
   ghcr.io/konradx64/seraphd:latest
 
 # Agent (first run — enrollment)
@@ -81,6 +83,7 @@ services:
       SERAPHD_ADMIN_ADDR: 0.0.0.0:9090
       SERAPHD_ADMIN_KEY: ${SERAPHD_ADMIN_KEY:?Set SERAPHD_ADMIN_KEY}
       SERAPHD_TUNNEL_ADDR: 0.0.0.0:7700
+      SERAPHD_GEOIP_DB: /var/lib/seraph/GeoLite2-City.mmdb
     ports:
       - "80:8080"
       - "443:8443"
@@ -88,6 +91,7 @@ services:
       - "7700:7700/udp"
     volumes:
       - seraph-data:/var/lib/seraph
+      - /path/to/GeoLite2-City.mmdb:/var/lib/seraph/GeoLite2-City.mmdb:ro
 
   seraph-agent:
     image: ghcr.io/konradx64/seraph-agent:latest
@@ -138,12 +142,26 @@ seraphd \
   --admin-addr 127.0.0.1:9090 \
   --admin-key 'replace-with-a-long-random-password' \
   --tunnel-addr 0.0.0.0:7700 \
+  --geoip-db /path/to/GeoLite2-City.mmdb \
+  --trust-proxy-headers \
   --data-dir data
 ```
 
 Run `seraphd --help` for the complete command-line reference.
 
-The same settings can be supplied through `SERAPHD_DATA_DIR`, `SERAPHD_HTTP_ADDR`, `SERAPHD_HTTPS_ADDR`, `SERAPHD_HTTPS_REDIRECT_PORT`, `SERAPHD_ADMIN_ADDR`, `SERAPHD_ADMIN_KEY`, and `SERAPHD_TUNNEL_ADDR`. Command-line arguments take precedence over environment variables. The admin key is required; sign in to the dashboard with username `admin` and the configured key as the password.
+The same settings can be supplied through `SERAPHD_DATA_DIR`, `SERAPHD_HTTP_ADDR`, `SERAPHD_HTTPS_ADDR`, `SERAPHD_HTTPS_REDIRECT_PORT`, `SERAPHD_ADMIN_ADDR`, `SERAPHD_ADMIN_KEY`, `SERAPHD_TUNNEL_ADDR`, `SERAPHD_GEOIP_DB`, and `SERAPHD_TRUST_PROXY_HEADERS`. Command-line arguments take precedence over environment variables. The admin key is required; sign in to the dashboard with username `admin` and the configured key as the password.
+
+`--geoip-db` is optional, but a MaxMind-compatible city database is required to draw client-to-proxy paths on the live map. Requests still appear in the map's recent-request list when no location is available. Private and loopback client addresses do not have a public GeoIP location.
+
+For local map testing, start `seraphd` with `--trust-proxy-headers` (or `SERAPHD_TRUST_PROXY_HEADERS=true`) and send a request through a configured route with a public test address:
+
+```bash
+curl -H 'Host: your-configured-route.example' \
+  -H 'X-Forwarded-For: 8.8.8.8' \
+  http://127.0.0.1:8080/
+```
+
+Only enable trusted proxy headers for testing or when the public listener is reachable exclusively through a trusted reverse proxy. Otherwise, clients can spoof their displayed address.
 
 The data directory contains `seraph.db`, the tunnel CA files, and a `certs/` directory for TLS certificates and private keys.
 

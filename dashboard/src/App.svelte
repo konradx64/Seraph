@@ -1,6 +1,8 @@
 <script>
   import { onMount } from 'svelte';
   import logo from './assets/logo.png';
+  import maplibregl from 'maplibre-gl';
+  import 'maplibre-gl/dist/maplibre-gl.css';
   import { 
     CheckCircle2, 
     Route, 
@@ -21,7 +23,8 @@
     Globe,
     ArrowRight,
     Clock,
-    Cable
+    Cable,
+    Map as MapIcon
   } from '@lucide/svelte';
 
   // Shared state variables
@@ -98,6 +101,55 @@
 
   let searchQuery = $state("");
   let eventSource = null;
+  let recentMapRequests = $state([]);
+
+  const proxyLocation = {
+    id: "proxy",
+    name: "Frankfurt proxy",
+    latitude: 50.1109,
+    longitude: 8.6821
+  };
+
+  function requestStatus(statusCode, isMiss = false) {
+    if (isMiss || statusCode >= 400) return "error";
+    if (statusCode >= 300) return "redirect";
+    return "success";
+  }
+
+  function showProxyRequest(msg, isMiss = false) {
+    const fallbackStatus = isMiss ? 404 : (msg.upstream?.includes("Redirect") ? 301 : 200);
+    const statusCode = Number(msg.status_code ?? fallbackStatus);
+    const latencyMs = Number(msg.latency_ms ?? 0);
+    const latitude = Number(msg.client_latitude);
+    const longitude = Number(msg.client_longitude);
+    const hasLocation = msg.client_latitude !== null && msg.client_latitude !== undefined
+      && msg.client_longitude !== null && msg.client_longitude !== undefined
+      && Number.isFinite(latitude) && Number.isFinite(longitude);
+    const status = requestStatus(statusCode, isMiss);
+    const locationName = [msg.client_city, msg.client_country].filter(Boolean).join(", ")
+      || msg.client_ip
+      || "Unknown location";
+    const request = {
+      id: Date.now() + Math.random(),
+      origin: {
+        id: hasLocation ? `${longitude}:${latitude}` : `unknown:${msg.client_ip || "client"}`,
+        name: locationName,
+        latitude,
+        longitude
+      },
+      destination: proxyLocation,
+      status,
+      statusCode,
+      latencyMs,
+      method: msg.method,
+      host: msg.host,
+      path: msg.path,
+      hasLocation
+    };
+
+    recentMapRequests = [request, ...recentMapRequests].slice(0, 6);
+    if (hasLocation) playRequest(request);
+  }
 
   function routeKey(route) {
     return `${route.hostname}${route.path_prefix || ""}`;
@@ -166,9 +218,31 @@
         };
         return;
       } else if (msg.type === "RequestHit") {
-        logText = `Proxy Hit: ${msg.host} ${msg.method} ${msg.path} -> ${msg.upstream}`;
+        const geoParts = [];
+        if (msg.client_city) geoParts.push(msg.client_city);
+        if (msg.client_country) geoParts.push(msg.client_country);
+        if (msg.client_latitude !== null && msg.client_latitude !== undefined &&
+            msg.client_longitude !== null && msg.client_longitude !== undefined) {
+          geoParts.push(`${msg.client_latitude.toFixed(4)}, ${msg.client_longitude.toFixed(4)}`);
+        }
+        showProxyRequest(msg);
+        const geoInfo = geoParts.length > 0 ? ` [${geoParts.join(" ")}]` : "";
+        const ipInfo = msg.client_ip ? ` (${msg.client_ip})` : "";
+        const resultInfo = msg.status_code ? ` [${msg.status_code} · ${msg.latency_ms || 0} ms]` : "";
+        logText = `Proxy Hit${geoInfo}: ${msg.host} ${msg.method} ${msg.path} -> ${msg.upstream}${resultInfo}${ipInfo}`;
       } else if (msg.type === "RequestMiss") {
-        logText = `Proxy 404: ${msg.host} ${msg.method} ${msg.path} (No route configured)`;
+        const geoParts = [];
+        if (msg.client_city) geoParts.push(msg.client_city);
+        if (msg.client_country) geoParts.push(msg.client_country);
+        if (msg.client_latitude !== null && msg.client_latitude !== undefined &&
+            msg.client_longitude !== null && msg.client_longitude !== undefined) {
+          geoParts.push(`${msg.client_latitude.toFixed(4)}, ${msg.client_longitude.toFixed(4)}`);
+        }
+        showProxyRequest(msg, true);
+        const geoInfo = geoParts.length > 0 ? ` [${geoParts.join(" ")}]` : "";
+        const ipInfo = msg.client_ip ? ` (${msg.client_ip})` : "";
+        const resultInfo = msg.status_code ? ` [${msg.status_code} · ${msg.latency_ms || 0} ms]` : "";
+        logText = `Proxy Miss${geoInfo}: ${msg.host} ${msg.method} ${msg.path} (No route configured)${resultInfo}${ipInfo}`;
       } else if (msg.type === "RouteAdded") {
         logText = `Route registered for host ${msg.key}`;
         routes = msg.routes || routes;
@@ -267,9 +341,252 @@
     };
   }
 
+  let map;
+  let mapElement;
+  let mapResizeObserver;
+  let mapReady = false;
+  let activeRequests = new Map();
+  let pendingMapRequests = [];
+  let requestFrame = 0;
+  const worldBounds = [[-179, -58], [179, 83]];
+
+  function greatCircleCoordinates(origin, destination) {
+    const toRadians = (value) => value * Math.PI / 180;
+    const toDegrees = (value) => value * 180 / Math.PI;
+    const vector = (point) => {
+      const longitude = toRadians(point.longitude);
+      const latitude = toRadians(point.latitude);
+      return [
+        Math.cos(latitude) * Math.cos(longitude),
+        Math.cos(latitude) * Math.sin(longitude),
+        Math.sin(latitude)
+      ];
+    };
+    const from = vector(origin);
+    const to = vector(destination);
+    const angle = Math.acos(Math.min(1, Math.max(-1, from[0] * to[0] + from[1] * to[1] + from[2] * to[2])));
+    const divisor = Math.sin(angle);
+
+    return Array.from({ length: 81 }, (_, index) => {
+      const progress = index / 80;
+      const a = divisor ? Math.sin((1 - progress) * angle) / divisor : 1 - progress;
+      const b = divisor ? Math.sin(progress * angle) / divisor : progress;
+      const x = a * from[0] + b * to[0];
+      const y = a * from[1] + b * to[1];
+      const z = a * from[2] + b * to[2];
+      return [toDegrees(Math.atan2(y, x)), toDegrees(Math.atan2(z, Math.hypot(x, y)))];
+    });
+  }
+
+  function updateWorldCamera(force = false) {
+    if (!map) return;
+    const wasFullyZoomedOut = map.getZoom() <= map.getMinZoom() + 0.05;
+    map.setMinZoom(-2);
+    map.resize();
+    const camera = map.cameraForBounds(worldBounds, { padding: 28 });
+    if (!camera || camera.zoom === undefined) return;
+    map.setMinZoom(camera.zoom);
+    if (force || wasFullyZoomedOut) map.jumpTo(camera);
+  }
+
+  function playRequest(request) {
+    if (!map || !mapReady) {
+      pendingMapRequests = [...pendingMapRequests.slice(-49), request];
+      return;
+    }
+    const colors = {
+      success: '#22c55e',
+      redirect: '#f59e0b',
+      error: '#ef4444'
+    };
+    const color = colors[request.status] || '#67e8f9';
+    activeRequests.set(request.id, {
+      request,
+      coordinates: greatCircleCoordinates(request.origin, request.destination),
+      color,
+      startedAt: performance.now()
+    });
+
+    if (requestFrame) return;
+
+    function draw(time) {
+      requestFrame = 0;
+      if (!map) return;
+
+      const pathFeatures = [];
+      const headFeatures = [];
+      const drawnRoutes = new Set();
+
+      for (const [id, active] of activeRequests) {
+        const elapsed = time - active.startedAt;
+        if (elapsed > 4200) {
+          activeRequests.delete(id);
+          continue;
+        }
+        const progress = Math.min(1, Math.max(0, elapsed / 1650));
+        const endIndex = Math.max(1, Math.floor(progress * (active.coordinates.length - 1)));
+        const routeKey = `${active.request.origin.id}:${active.request.destination.id}`;
+
+        if (!drawnRoutes.has(routeKey)) {
+          drawnRoutes.add(routeKey);
+          pathFeatures.push({
+            type: 'Feature',
+            properties: { color: '#0891b2' },
+            geometry: {
+              type: 'LineString',
+              coordinates: active.coordinates.slice(0, endIndex + 1)
+            }
+          });
+        }
+
+        headFeatures.push({
+          type: 'Feature',
+          properties: {
+            color: active.color,
+            status: active.request.status,
+            code: active.request.statusCode
+          },
+          geometry: {
+            type: 'Point',
+            coordinates: active.coordinates[endIndex]
+          }
+        });
+      }
+
+      const pathSource = map.getSource('request-path');
+      if (pathSource) {
+        pathSource.setData({ type: 'FeatureCollection', features: pathFeatures });
+      }
+      const headSource = map.getSource('request-head');
+      if (headSource) {
+        headSource.setData({ type: 'FeatureCollection', features: headFeatures });
+      }
+
+      if (activeRequests.size > 0) {
+        requestFrame = requestAnimationFrame(draw);
+      }
+    }
+    requestFrame = requestAnimationFrame(draw);
+  }
+
   onMount(() => {
     connectSSE();
-    return () => eventSource?.close();
+
+    map = new maplibregl.Map({
+      container: mapElement,
+      renderWorldCopies: false,
+      scrollZoom: false,
+      touchZoomRotate: false,
+      dragRotate: false,
+      style: {
+        version: 8,
+        sources: {
+          'countries': {
+            type: 'geojson',
+            data: '/world-countries.geojson'
+          }
+        },
+        layers: [
+          {
+            id: 'background',
+            type: 'background',
+            paint: {
+              'background-color': '#f8fafc'
+            }
+          },
+          {
+            id: 'countries-fill',
+            source: 'countries',
+            type: 'fill',
+            filter: ['!=', ['get', 'name'], 'Antarctica'],
+            paint: {
+              'fill-color': '#e2e8f0'
+            }
+          },
+          {
+            id: 'country-borders',
+            source: 'countries',
+            type: 'line',
+            filter: ['!=', ['get', 'name'], 'Antarctica'],
+            paint: {
+              'line-color': '#cbd5e1',
+              'line-width': 0.65
+            }
+          }
+        ],
+        center: [0, 20],
+        zoom: 1,
+        minZoom: -1,
+        maxZoom: 4,
+        projection: { type: 'mercator' }
+      }
+    });
+
+    map.on('load', () => {
+      updateWorldCamera(true);
+      mapResizeObserver = new ResizeObserver(() => updateWorldCamera());
+      mapResizeObserver.observe(mapElement);
+
+      map.addSource('request-path', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addSource('request-head', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+
+      map.addLayer({
+        id: 'request-path-glow',
+        type: 'line',
+        source: 'request-path',
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': 11,
+          'line-opacity': 0.2,
+          'line-blur': 5
+        }
+      });
+      map.addLayer({
+        id: 'request-path',
+        type: 'line',
+        source: 'request-path',
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': 2.5,
+          'line-opacity': 0.9
+        }
+      });
+      map.addLayer({
+        id: 'request-head-glow',
+        type: 'circle',
+        source: 'request-head',
+        paint: {
+          'circle-radius': 10,
+          'circle-color': ['get', 'color'],
+          'circle-opacity': 0.22,
+          'circle-blur': 0.7
+        }
+      });
+      map.addLayer({
+        id: 'request-head',
+        type: 'circle',
+        source: 'request-head',
+        paint: {
+          'circle-radius': 4,
+          'circle-color': ['get', 'color'],
+          'circle-stroke-width': 1.25,
+          'circle-stroke-color': '#ffffff'
+        }
+      });
+
+      mapReady = true;
+      const queuedRequests = pendingMapRequests;
+      pendingMapRequests = [];
+      queuedRequests.forEach(playRequest);
+    });
+
+    return () => {
+      eventSource?.close();
+      cancelAnimationFrame(requestFrame);
+      mapResizeObserver?.disconnect();
+      if (map) map.remove();
+      map = undefined;
+    };
   });
 
   function startCreateRoute() {
@@ -889,6 +1206,60 @@
           </div>
         </div>
 
+        <!-- Client Locations Map Card -->
+        <div class="card bg-white border border-slate-200 rounded-xl shadow-xs">
+          <div class="card-body p-6">
+            <h2 class="text-slate-900 font-bold text-xs uppercase tracking-wider flex items-center gap-2 mb-4">
+              <MapIcon class="w-4.5 h-4.5 text-cyan-500" />
+              Client Locations Map
+            </h2>
+            <div class="relative">
+              <div bind:this={mapElement} class="w-full h-96 rounded-lg border border-slate-200 overflow-hidden bg-slate-50"></div>
+              <div class="absolute left-3 bottom-3 flex items-center gap-3 rounded-md border border-slate-200 bg-white/90 px-2.5 py-1.5 text-[9px] font-bold text-slate-500 shadow-sm backdrop-blur-sm pointer-events-none">
+                <span class="flex items-center gap-1"><i class="w-1.5 h-1.5 rounded-full bg-emerald-500"></i>2xx</span>
+                <span class="flex items-center gap-1"><i class="w-1.5 h-1.5 rounded-full bg-amber-500"></i>3xx</span>
+                <span class="flex items-center gap-1"><i class="w-1.5 h-1.5 rounded-full bg-rose-500"></i>4xx/5xx</span>
+              </div>
+            </div>
+
+            <div class="mt-4" aria-live="polite">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-[10px] font-extrabold uppercase tracking-widest text-slate-400">Recent proxy requests</span>
+                <span class="text-[10px] text-slate-400">Live via SSE</span>
+              </div>
+              {#if recentMapRequests.length}
+                <div class="grid grid-cols-1 xl:grid-cols-2 gap-2">
+                  {#each recentMapRequests as request (request.id)}
+                    <div class="flex items-center gap-2.5 min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                      <span class="w-2 h-2 shrink-0 rounded-full
+                        {request.status === 'success' ? 'bg-emerald-500' : request.status === 'redirect' ? 'bg-amber-500' : 'bg-rose-500'}"></span>
+                      <div class="min-w-0 flex-1">
+                        <div class="truncate text-[11px] font-bold text-slate-700" title={`${request.method} ${request.host}${request.path}`}>
+                          {request.method} {request.host}{request.path}
+                        </div>
+                        <div class="truncate text-[9px] text-slate-400">
+                          {request.origin.name}{request.hasLocation ? ' → Frankfurt' : ' · GeoIP unavailable'}
+                        </div>
+                      </div>
+                      <div class="shrink-0 text-right font-mono">
+                        <div class="text-[10px] font-bold
+                          {request.status === 'success' ? 'text-emerald-600' : request.status === 'redirect' ? 'text-amber-600' : 'text-rose-600'}">
+                          {request.statusCode}
+                        </div>
+                        <div class="text-[9px] text-slate-400">{request.latencyMs} ms</div>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <div class="rounded-lg border border-dashed border-slate-200 py-4 text-center text-[10px] text-slate-400">
+                  Waiting for requests through the proxy…
+                </div>
+              {/if}
+            </div>
+          </div>
+        </div>
+
       </div>
 
       <!-- RIGHT WORKSPACE: STATS & LOGS (4/12 width) -->
@@ -985,9 +1356,9 @@
             {#each filteredLogs as log}
               <div class="flex items-start gap-2 border-b border-slate-200 pb-2 leading-relaxed">
                 <span class="text-slate-400 select-none text-[10px] font-bold">{log.time}</span>
-                {#if log.text.includes("Proxy 404") || log.text.includes("failed") || log.text.includes("Error")}
+                {#if log.text.includes("Proxy Miss") || log.text.includes("failed") || log.text.includes("Error")}
                   <span class="text-rose-600 font-bold">{log.text}</span>
-                {:else if log.text.includes("Proxy Hit:") || log.text.includes("stored") || log.text.includes("registered")}
+                {:else if log.text.includes("Proxy Hit") || log.text.includes("stored") || log.text.includes("registered")}
                   <span class="text-emerald-600 font-medium">{log.text}</span>
                 {:else if log.text.includes("challenge") || log.text.includes("ACME")}
                   <span class="text-amber-600 font-medium">{log.text}</span>

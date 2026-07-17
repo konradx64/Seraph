@@ -57,6 +57,8 @@ async fn parallel_http2_requests_keep_tunnel_responses_and_cookies_isolated() {
         admin_key: "test".to_string(),
         data_dir: temp.path().display().to_string(),
         tunnel_addr: tunnel_addr.to_string(),
+        geoip_db: None,
+        trust_proxy_headers: false,
     };
     let database_path = temp.path().join("test.db");
     let state = Arc::new(AppState::new(
@@ -67,6 +69,7 @@ async fn parallel_http2_requests_keep_tunnel_responses_and_cookies_isolated() {
         certificates,
         ca,
         Stats::from_persisted(PersistedStats::default()),
+        seraphd::geoip::GeoIpService::new(None),
     ));
 
     start_seraph(state.clone());

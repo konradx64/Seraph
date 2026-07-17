@@ -34,4 +34,12 @@ pub struct AppConfig {
     /// Address for the QUIC tunnel listener
     #[arg(long, env = "SERAPHD_TUNNEL_ADDR", default_value = "0.0.0.0:7700")]
     pub tunnel_addr: String,
+
+    /// Path to the MaxMind GeoIP2/GeoLite2 database file (e.g. GeoLite2-City.mmdb)
+    #[arg(long, env = "SERAPHD_GEOIP_DB")]
+    pub geoip_db: Option<String>,
+
+    /// Trust X-Forwarded-For/X-Real-IP for the client address (testing or trusted proxies only)
+    #[arg(long, env = "SERAPHD_TRUST_PROXY_HEADERS", default_value_t = false)]
+    pub trust_proxy_headers: bool,
 }

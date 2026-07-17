@@ -47,8 +47,11 @@ pub fn run(config: AppConfig) -> anyhow::Result<()> {
     // Initialize Tunnel CA
     let ca = crate::tunnel::ca::TunnelCa::load_or_create(data_dir)?;
 
+    // Initialize GeoIP Service
+    let geoip = crate::geoip::GeoIpService::new(config.geoip_db.as_deref());
+
     let state = Arc::new(AppState::new(
-        config, db, cert_store, routes, certs, ca, stats,
+        config, db, cert_store, routes, certs, ca, stats, geoip,
     ));
 
     let mut server = Server::new(None)?;

@@ -20,6 +20,7 @@ pub struct AppState {
     pub stats: crate::stats::Stats,
     pub active_tunnels: std::sync::Arc<tokio::sync::RwLock<HashMap<String, quinn::Connection>>>,
     pub ca: std::sync::Arc<crate::tunnel::ca::TunnelCa>,
+    pub geoip: std::sync::Arc<crate::geoip::GeoIpService>,
 }
 
 impl AppState {
@@ -31,6 +32,7 @@ impl AppState {
         certs: CertificateRegistry,
         ca: crate::tunnel::ca::TunnelCa,
         stats: crate::stats::Stats,
+        geoip: crate::geoip::GeoIpService,
     ) -> Self {
         let (events, _) = tokio::sync::broadcast::channel(100);
         Self {
@@ -44,6 +46,7 @@ impl AppState {
             stats,
             active_tunnels: std::sync::Arc::new(tokio::sync::RwLock::new(HashMap::new())),
             ca: std::sync::Arc::new(ca),
+            geoip: std::sync::Arc::new(geoip),
         }
     }
 }

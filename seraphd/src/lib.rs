@@ -5,6 +5,7 @@ pub mod config;
 pub mod control;
 pub mod db;
 pub mod event;
+pub mod geoip;
 pub mod registry;
 pub mod route;
 mod secure_fs;

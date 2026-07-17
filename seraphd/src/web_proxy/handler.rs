@@ -3,7 +3,7 @@ use pingora_proxy::{ProxyHttp, Session};
 
 use crate::{state::AppState, tunnel::peer::TunnelPeer};
 use async_trait::async_trait;
-use std::sync::Arc;
+use std::{net::IpAddr, sync::Arc};
 
 pub struct WebProxyHandler {
     state: Arc<AppState>,
@@ -23,10 +23,40 @@ fn downstream_is_tls(session: &Session) -> bool {
         .is_some()
 }
 
+fn parse_forwarded_for(value: &str) -> Option<IpAddr> {
+    value
+        .split(',')
+        .map(str::trim)
+        .find_map(|candidate| candidate.parse().ok())
+}
+
+fn forwarded_client_ip(session: &Session) -> Option<IpAddr> {
+    session
+        .req_header()
+        .headers
+        .get("X-Forwarded-For")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_forwarded_for)
+        .or_else(|| {
+            session
+                .req_header()
+                .headers
+                .get("X-Real-IP")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.trim().parse().ok())
+        })
+}
+
 pub struct ReqContext {
     pub start_time: std::time::Instant,
     pub matched_host: Option<String>,
+    pub upstream: Option<String>,
+    pub request_host: Option<String>,
+    pub request_method: Option<String>,
+    pub request_path: Option<String>,
     pub forward_ip: bool,
+    pub client_ip: Option<std::net::IpAddr>,
+    pub geo_lookup: Option<crate::geoip::GeoLookupResult>,
 }
 
 #[async_trait]
@@ -36,7 +66,13 @@ impl ProxyHttp for WebProxyHandler {
         ReqContext {
             start_time: std::time::Instant::now(),
             matched_host: None,
+            upstream: None,
+            request_host: None,
+            request_method: None,
+            request_path: None,
             forward_ip: false,
+            client_ip: None,
+            geo_lookup: None,
         }
     }
 
@@ -45,6 +81,20 @@ impl ProxyHttp for WebProxyHandler {
         session: &mut Session,
         ctx: &mut Self::CTX,
     ) -> pingora::Result<bool> {
+        let peer_ip = session
+            .client_addr()
+            .and_then(|addr| addr.as_inet())
+            .map(|inet| inet.ip());
+        let client_ip = if self.state.config.trust_proxy_headers {
+            forwarded_client_ip(session).or(peer_ip)
+        } else {
+            peer_ip
+        };
+        let geo_lookup = client_ip.and_then(|ip| self.state.geoip.lookup(ip));
+
+        ctx.client_ip = client_ip;
+        ctx.geo_lookup = geo_lookup;
+
         let path = session.req_header().uri.path().to_string();
 
         if path.starts_with("/.well-known/acme-challenge/") {
@@ -90,11 +140,16 @@ impl ProxyHttp for WebProxyHandler {
             .unwrap_or("")
             .to_string();
 
+        ctx.request_host = Some(host.clone());
+        ctx.request_method = Some(session.req_header().method.to_string());
+        ctx.request_path = Some(path.clone());
+
         let routes = self.state.routes.load();
         let matched = routes.match_route(&host, &path);
 
         if let Some(route) = matched {
             ctx.matched_host = Some(route.hostname.clone());
+            ctx.upstream = Some(route.upstream.clone());
             ctx.forward_ip = route.forward_ip;
 
             let is_tls = downstream_is_tls(session);
@@ -127,12 +182,7 @@ impl ProxyHttp for WebProxyHandler {
                     .write_response_header(Box::new(response), true)
                     .await?;
 
-                let _ = self.state.events.send(crate::event::Event::RequestHit {
-                    host: host.to_string(),
-                    method: session.req_header().method.to_string(),
-                    path: path.to_string(),
-                    upstream: "HTTP-to-HTTPS-Redirect".to_string(),
-                });
+                ctx.upstream = Some("HTTP-to-HTTPS-Redirect".to_string());
 
                 return Ok(true);
             }
@@ -180,6 +230,7 @@ impl ProxyHttp for WebProxyHandler {
         let mut peer = None;
         if let Some(route) = &matched {
             ctx.matched_host = Some(route.hostname.clone());
+            ctx.upstream = Some(route.upstream.clone());
             ctx.forward_ip = route.forward_ip;
             if let Some(tunnel_id) = &route.tunnel {
                 let tunnel_peer = TunnelPeer::new(
@@ -196,24 +247,6 @@ impl ProxyHttp for WebProxyHandler {
                     route.upstream_tls,
                     route.hostname.clone(),
                 )));
-            }
-        }
-
-        match &matched {
-            Some(route) => {
-                let _ = self.state.events.send(crate::event::Event::RequestHit {
-                    host: host.to_string(),
-                    method: session.req_header().method.to_string(),
-                    path: path.to_string(),
-                    upstream: route.upstream.clone(),
-                });
-            }
-            None => {
-                let _ = self.state.events.send(crate::event::Event::RequestMiss {
-                    host: host.to_string(),
-                    method: session.req_header().method.to_string(),
-                    path: path.to_string(),
-                });
             }
         }
 
@@ -236,15 +269,63 @@ impl ProxyHttp for WebProxyHandler {
             .response_written()
             .map(|resp| resp.status.as_u16())
             .unwrap_or(502);
+        let latency_ms = ctx.start_time.elapsed().as_millis() as u64;
 
         self.state.stats.record_request(status);
 
         if let Some(host) = &ctx.matched_host {
-            let latency_ms = ctx.start_time.elapsed().as_millis() as u64;
             let is_connection_failure = e.is_some() || status == 502 || status == 504;
             self.state
                 .stats
                 .record_route_request(host, latency_ms, is_connection_failure);
+        }
+
+        if let (Some(host), Some(method), Some(path)) = (
+            ctx.request_host.clone(),
+            ctx.request_method.clone(),
+            ctx.request_path.clone(),
+        ) {
+            let client_ip = ctx.client_ip.map(|ip| ip.to_string());
+            let client_country = ctx
+                .geo_lookup
+                .as_ref()
+                .and_then(|geo| geo.country_code.clone());
+            let client_city = ctx.geo_lookup.as_ref().and_then(|geo| geo.city.clone());
+            let client_latitude = ctx.geo_lookup.as_ref().and_then(|geo| geo.latitude);
+            let client_longitude = ctx.geo_lookup.as_ref().and_then(|geo| geo.longitude);
+
+            let event = if ctx.matched_host.is_some() {
+                crate::event::Event::RequestHit {
+                    host,
+                    method,
+                    path,
+                    upstream: ctx
+                        .upstream
+                        .clone()
+                        .unwrap_or_else(|| "Rejected by proxy".to_string()),
+                    status_code: status,
+                    latency_ms,
+                    client_ip,
+                    client_country,
+                    client_city,
+                    client_latitude,
+                    client_longitude,
+                }
+            } else {
+                crate::event::Event::RequestMiss {
+                    host,
+                    method,
+                    path,
+                    status_code: status,
+                    latency_ms,
+                    client_ip,
+                    client_country,
+                    client_city,
+                    client_latitude,
+                    client_longitude,
+                }
+            };
+            let _ = self.state.events.send(event);
         }
     }
 
