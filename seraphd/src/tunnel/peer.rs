@@ -37,7 +37,13 @@ impl TunnelPeer {
         }
     }
     pub fn into_http_peer(self) -> HttpPeer {
-        let group_key = 0;
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = DefaultHasher::new();
+        self.tunnel_id.hash(&mut hasher);
+        self.target.hash(&mut hasher);
+        let group_key = hasher.finish();
 
         let connector = TunnelConnector {
             state: self.state,

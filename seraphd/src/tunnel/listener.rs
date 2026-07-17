@@ -117,19 +117,32 @@ async fn handle_connection(
 
                 let _ = conn.closed().await;
 
+                let mut removed = false;
                 {
                     let mut tunnels = state.active_tunnels.write().await;
-                    tunnels.remove(&agent_id);
-                }
-                if let Ok(tunnels) = crate::control::tunnels::tunnel_snapshot(&state).await {
-                    let _ = state.events.send(crate::event::Event::TunnelDisconnected {
-                        id: agent_id.clone(),
-                        tunnels,
-                        status: crate::control::tunnels::status_snapshot(&state),
-                    });
+                    if let Some(active_conn) = tunnels.get(&agent_id) {
+                        if active_conn.stable_id() == conn.stable_id() {
+                            tunnels.remove(&agent_id);
+                            removed = true;
+                        }
+                    }
                 }
 
-                tracing::info!("Tunnel agent '{}' disconnected", agent_id);
+                if removed {
+                    if let Ok(tunnels) = crate::control::tunnels::tunnel_snapshot(&state).await {
+                        let _ = state.events.send(crate::event::Event::TunnelDisconnected {
+                            id: agent_id.clone(),
+                            tunnels,
+                            status: crate::control::tunnels::status_snapshot(&state),
+                        });
+                    }
+                    tracing::info!("Tunnel agent '{}' disconnected", agent_id);
+                } else {
+                    tracing::info!(
+                        "Obsolete tunnel connection for agent '{}' cleaned up",
+                        agent_id
+                    );
+                }
             } else {
                 tracing::warn!(
                     "Rejecting connection from {}: could not extract agent ID",

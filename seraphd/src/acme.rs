@@ -40,26 +40,28 @@ impl Drop for ChallengeCleanup<'_> {
     }
 }
 
-pub async fn trigger_refresh(state: Arc<AppState>, domain: String) {
+pub async fn trigger_refresh(state: Arc<AppState>, domain: String, email: Option<String>) {
     tokio::spawn(async move {
         let _ = state.events.send(crate::event::Event::Log {
             time: chrono::Local::now().format("%H:%M:%S").to_string(),
-            text: format!("Starting manual ACME refresh for domain: {}", domain),
+            text: format!("Starting ACME flow for domain: {}", domain),
         });
 
-        let email = state.cert_store.load_all().ok().and_then(|certs| {
-            certs
-                .into_iter()
-                .find(|c| c.sni == domain)
-                .and_then(|c| c.acme_email)
+        let contact_email = email.or_else(|| {
+            state.cert_store.load_all().ok().and_then(|certs| {
+                certs
+                    .into_iter()
+                    .find(|c| c.sni == domain)
+                    .and_then(|c| c.acme_email)
+            })
         });
 
-        match run_acme_flow(&state, &domain, email.as_deref()).await {
+        match run_acme_flow(&state, &domain, contact_email.as_deref()).await {
             Ok(_) => {
                 let _ = state.events.send(crate::event::Event::Log {
                     time: chrono::Local::now().format("%H:%M:%S").to_string(),
                     text: format!(
-                        "Successfully renewed TLS certificate for domain: {}",
+                        "Successfully renewed/obtained TLS certificate for domain: {}",
                         domain
                     ),
                 });
@@ -71,10 +73,10 @@ pub async fn trigger_refresh(state: Arc<AppState>, domain: String) {
                 }
             }
             Err(e) => {
-                tracing::error!("Manual ACME refresh failed for {}: {:?}", domain, e);
+                tracing::error!("ACME flow failed for {}: {:?}", domain, e);
                 let _ = state.events.send(crate::event::Event::Log {
                     time: chrono::Local::now().format("%H:%M:%S").to_string(),
-                    text: format!("ACME refresh failed for {}: {:?}", domain, e),
+                    text: format!("ACME flow failed for {}: {:?}", domain, e),
                 });
             }
         }
@@ -200,13 +202,7 @@ async fn run_acme_flow(state: &AppState, domain: &str, email: Option<&str>) -> a
     Ok(())
 }
 
-pub async fn trigger_refresh_with_email(
-    state: Arc<AppState>,
-    domain: String,
-    email: String,
-) -> anyhow::Result<()> {
-    run_acme_flow(&state, &domain, Some(&email)).await
-}
+
 
 #[cfg(test)]
 mod tests {

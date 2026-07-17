@@ -91,7 +91,7 @@ pub async fn refresh_cert(
     Json(payload): Json<RefreshCertPayload>,
 ) -> (StatusCode, Json<CommandResponse>) {
     let sni = payload.sni.clone();
-    crate::acme::trigger_refresh(state, sni.clone()).await;
+    crate::acme::trigger_refresh(state, sni.clone(), None).await;
     (
         StatusCode::ACCEPTED,
         Json(CommandResponse {
@@ -190,22 +190,7 @@ pub async fn generate_acme_cert(
     let email = payload.email;
     let response_sni = sni.clone();
 
-    let state_clone = state.clone();
-    tokio::spawn(async move {
-        let _ = state_clone.events.send(crate::event::Event::Log {
-            time: chrono::Local::now().format("%H:%M:%S").to_string(),
-            text: format!(
-                "Requesting Let's Encrypt TLS certificate for domain: {} (email: {})",
-                sni, email
-            ),
-        });
-
-        if let Err(e) =
-            crate::acme::trigger_refresh_with_email(state_clone.clone(), sni.clone(), email).await
-        {
-            tracing::error!("ACME generation failed for {}: {:?}", sni, e);
-        }
-    });
+    crate::acme::trigger_refresh(state, sni, Some(email)).await;
 
     (
         StatusCode::ACCEPTED,
