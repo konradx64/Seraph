@@ -8,6 +8,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct CertPair {
     pub cert: X509,
+    pub chain: Vec<X509>,
     pub key: PKey<Private>,
 }
 
@@ -15,6 +16,7 @@ impl fmt::Debug for CertPair {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CertPair")
             .field("cert", &"X509 Certificate")
+            .field("chain_length", &self.chain.len())
             .field("key", &"Private Key")
             .finish()
     }
@@ -41,10 +43,18 @@ impl CertificateRegistry {
     }
 
     pub fn register(&mut self, sni: &str, cert_pem: &[u8], key_pem: &[u8]) -> anyhow::Result<()> {
-        let cert = X509::from_pem(cert_pem)?;
+        let mut certificates = X509::stack_from_pem(cert_pem)?;
+        if certificates.is_empty() {
+            anyhow::bail!("certificate PEM does not contain a certificate");
+        }
+        let cert = certificates.remove(0);
+        let chain = certificates;
         let key = PKey::private_key_from_pem(key_pem)?;
+        if !cert.public_key()?.public_eq(&key) {
+            anyhow::bail!("certificate and private key do not match");
+        }
         self.certs
-            .insert(sni.to_string(), Arc::new(CertPair { cert, key }));
+            .insert(sni.to_string(), Arc::new(CertPair { cert, chain, key }));
         Ok(())
     }
 

@@ -18,13 +18,28 @@ impl DynamicTlsAcceptor {
 #[async_trait]
 impl TlsAccept for DynamicTlsAcceptor {
     async fn certificate_callback(&self, ssl: &mut SslRef) {
-        if let Some(sni) = ssl.servername(NameType::HOST_NAME) {
+        if let Some(sni) = ssl.servername(NameType::HOST_NAME).map(str::to_owned) {
             tracing::info!("TLS handshake for SNI: {}", sni);
             let certs = self.state.certs.load();
-            if let Some(pair) = certs.get(sni) {
+            if let Some(pair) = certs.get(&sni) {
                 use pingora::tls::ext;
-                ext::ssl_use_certificate(ssl, &pair.cert).unwrap();
-                ext::ssl_use_private_key(ssl, &pair.key).unwrap();
+                if let Err(error) = ext::ssl_use_certificate(ssl, &pair.cert) {
+                    tracing::error!("Failed to configure TLS certificate for {}: {}", sni, error);
+                    return;
+                }
+                for certificate in &pair.chain {
+                    if let Err(error) = ext::ssl_add_chain_cert(ssl, certificate) {
+                        tracing::error!(
+                            "Failed to configure TLS certificate chain for {}: {}",
+                            sni,
+                            error
+                        );
+                        return;
+                    }
+                }
+                if let Err(error) = ext::ssl_use_private_key(ssl, &pair.key) {
+                    tracing::error!("Failed to configure TLS private key for {}: {}", sni, error);
+                }
             } else {
                 tracing::warn!("No certificate registered for SNI: {}", sni);
             }
